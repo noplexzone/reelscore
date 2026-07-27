@@ -10,7 +10,9 @@ export default function Friends() {
   const toast = useToast();
 
   const load = () => api("/friends").then(setData).catch(() => {});
-  useEffect(load, []);
+  // Don't pass `load` directly to useEffect — it returns a promise, which
+  // React would try to call as the effect cleanup and crash on unmount.
+  useEffect(() => { load(); }, []);
 
   async function sendRequest(e) {
     e.preventDefault();

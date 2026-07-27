@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- App went blank after navigating away from the Friends or Profile ("Me") tabs: their data-loading functions were passed directly to `useEffect`, so the returned promise was treated as a cleanup function and crashed React on unmount.
+
 ### Removed
 - Daily runtime cap on logging watches (26 runtime-hours per calendar day). New users typically log their entire watch history on first login, which the cap blocked with a 429.
 
