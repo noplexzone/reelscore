@@ -111,6 +111,9 @@ export default function Movie() {
                   <span className="muted">
                     {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
                   </span>
+                  {w.source && w.source !== "manual" && (
+                    <span className={`verified ${w.source}`}>✓ {w.source}</span>
+                  )}
                   <button
                     className="btn ghost small"
                     onClick={() => deleteWatch(w.id)}

@@ -172,6 +172,25 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
 .quick-log.done { background: var(--panel-2); color: var(--gold); border-color: var(--gold); }
 .quick-log:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
 
+/* ---- Verified source badges (Plex / Trakt) ---- */
+.verified {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  border: 1px solid; border-radius: 999px; padding: 1px 8px;
+  vertical-align: middle; letter-spacing: .3px;
+}
+.verified.plex { color: #e5a00d; border-color: #e5a00d; }
+.verified.trakt { color: #ed2224; border-color: #ed2224; }
+.source-chip {
+  position: absolute; bottom: 6px; left: 6px;
+  background: var(--ink); font-size: 10px; font-weight: 700;
+  border: 1px solid; border-radius: 999px; padding: 1px 6px;
+}
+.source-chip.plex { color: #e5a00d; border-color: #e5a00d; }
+.source-chip.trakt { color: #ed2224; border-color: #ed2224; }
+
+.plex-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.plex-form input { width: 200px; }
+
 /* ---- People (curated actors/directors) ---- */
 .person-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));

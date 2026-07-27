@@ -8,10 +8,12 @@ import {
 import { watchPoints, basePoints } from "../scoring.js";
 import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
 import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notablePeopleInMovie } from "../people.js";
+import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
 
 export const api = Router();
 api.use(requireAuth);
+api.use("/connections", connections);
 
 function userSummary(u) {
   return {
@@ -152,7 +154,7 @@ api.get("/movie/:id", async (req, res, next) => {
     const m = await movieDetails(tmdbId);
     const watched = db
       .prepare(
-        "SELECT id, watched_at, points FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
+        "SELECT id, watched_at, points, source FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
       )
       .all(req.user.id, m.id);
     res.json({
@@ -346,7 +348,7 @@ api.post("/watches", async (req, res, next) => {
 api.get("/watches", (req, res) => {
   const rows = db
     .prepare(
-      `SELECT id, tmdb_id, title, poster_path, points, is_rewatch, watched_at
+      `SELECT id, tmdb_id, title, poster_path, points, is_rewatch, watched_at, source
        FROM watches WHERE user_id = ? ORDER BY watched_at DESC LIMIT 100`
     )
     .all(req.user.id);
@@ -450,7 +452,7 @@ api.get("/feed", (req, res) => {
   const placeholders = ids.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT w.title, w.poster_path, w.points, w.watched_at, w.tmdb_id, u.username
+      `SELECT w.title, w.poster_path, w.points, w.watched_at, w.tmdb_id, w.source, u.username
        FROM watches w JOIN users u ON u.id = w.user_id
        WHERE w.user_id IN (${placeholders})
        ORDER BY w.watched_at DESC LIMIT 50`
@@ -471,15 +473,19 @@ api.get("/users/:username", (req, res) => {
   }
   const recent = db
     .prepare(
-      `SELECT title, poster_path, points, watched_at, tmdb_id FROM watches
+      `SELECT title, poster_path, points, watched_at, tmdb_id, source FROM watches
        WHERE user_id = ? ORDER BY watched_at DESC LIMIT 12`
     )
     .all(u.id);
+  const linkedServices = db
+    .prepare("SELECT service FROM connections WHERE user_id = ? ORDER BY service")
+    .all(u.id)
+    .map((r) => r.service);
   const trophies = db
     .prepare(
       `SELECT name, description, points, unlocked_at FROM achievements
        WHERE user_id = ? ORDER BY points DESC LIMIT 12`
     )
     .all(u.id);
-  res.json({ ...userSummary(u), recent, trophies, is_friend: isFriend });
+  res.json({ ...userSummary(u), recent, trophies, is_friend: isFriend, connections: linkedServices });
 });

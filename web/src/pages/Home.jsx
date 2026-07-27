@@ -133,6 +133,9 @@ export default function Home() {
               <div className="grow">
                 <b><Link to={`/u/${f.username}`}>{f.username}</Link></b>{" "}
                 watched <Link to={`/movie/${f.tmdb_id}`}><b>{f.title}</b></Link>
+                {f.source && f.source !== "manual" && (
+                  <span className={`verified ${f.source}`} style={{ marginLeft: 6 }}>✓ {f.source}</span>
+                )}
                 <div className="muted">{timeAgo(f.watched_at)}</div>
               </div>
               <span className="pts">+{f.points}</span>

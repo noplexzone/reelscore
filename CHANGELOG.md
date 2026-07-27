@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Plex and Trakt account linking (profile page → Connections) with watch-history import. Synced watches carry a per-service **verified badge** (shown on watch history, profiles, and the friends feed) proving the film is in the service's history; a manual log of the same film on the same day is upgraded in place instead of duplicated. Trakt uses the OAuth device-code flow and needs `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET`; Plex takes a server URL + `X-Plex-Token`.
+- Filmography-completion trophies for a curated set of 46 marquee actors and directors (`500 + 25/film` bonus), with a new Actors tab listing per-person progress and person pages showing each filmography with watched flags. Movie pages link curated cast/directors.
+- One-tap quick-log button on poster cards (search results, series grids, trending, filmographies) — log a film without opening its page.
+- Home page redesigned as a dashboard: compact stat strip, continue-the-series progress, closest locked trophies, TMDB weekly trending, and the friends feed (it previously duplicated the profile page).
+- `TMDB_BASE_URL`/`TRAKT_BASE_URL` overrides plus local API stubs under `server/test/stub/` for developing without real keys.
+
 ### Fixed
 - App went blank after navigating away from the Friends or Profile ("Me") tabs: their data-loading functions were passed directly to `useEffect`, so the returned promise was treated as a cleanup function and crashed React on unmount.
 
