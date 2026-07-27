@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { db, totalScore, watchCount, currentStreak } from "../db.js";
 import { requireAuth } from "../auth.js";
-import { searchMovies, movieDetails, collectionDetails, trendingMovies } from "../tmdb.js";
+import {
+  searchMovies, movieDetails, collectionDetails, trendingMovies,
+  personDetails, personMovieCredits,
+} from "../tmdb.js";
 import { watchPoints, basePoints } from "../scoring.js";
 import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
+import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notablePeopleInMovie } from "../people.js";
 import { parsePositiveInt } from "../validation.js";
 
 export const api = Router();
@@ -166,6 +170,7 @@ api.get("/movie/:id", async (req, res, next) => {
         : null,
       potential_points: basePoints({ voteAverage: m.vote_average, runtime: m.runtime }),
       my_watches: watched,
+      notable_people: notablePeopleInMovie(m.credits),
     });
   } catch (e) {
     next(e);
@@ -197,6 +202,83 @@ api.get("/collection/:id", async (req, res, next) => {
           poster_path: p.poster_path,
           watched: watchedIds.has(p.id),
         })),
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ---- People (curated actors & directors) ---------------------------------
+api.get("/people", async (req, res, next) => {
+  try {
+    const watchedIds = new Set(
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+        .all(req.user.id)
+        .map((r) => r.tmdb_id)
+    );
+    const unlockedKeys = new Set(
+      db.prepare("SELECT key FROM achievements WHERE user_id = ? AND key LIKE 'person:%'")
+        .all(req.user.id)
+        .map((r) => r.key)
+    );
+    const settled = await Promise.allSettled(
+      CURATED_PEOPLE.map(async (p) => {
+        const [person, credits] = await Promise.all([
+          personDetails(p.id),
+          personMovieCredits(p.id),
+        ]);
+        const films = filterFilmography(p.role, credits);
+        const watched = films.filter((f) => watchedIds.has(f.id)).length;
+        return {
+          id: p.id,
+          role: p.role,
+          name: person.name,
+          profile_path: person.profile_path,
+          watched,
+          total: films.length,
+          bonus: personBonus(films.length),
+          complete: unlockedKeys.has(`person:${p.id}`) || (films.length >= 3 && watched === films.length),
+        };
+      })
+    );
+    const people = settled
+      .filter((s) => s.status === "fulfilled" && s.value.total > 0)
+      .map((s) => s.value)
+      .sort((a, b) => b.watched / b.total - a.watched / a.total || a.name.localeCompare(b.name));
+    res.json({ people });
+  } catch (e) {
+    next(e);
+  }
+});
+
+api.get("/people/:id", async (req, res, next) => {
+  const pid = parsePositiveInt(req.params.id);
+  if (!pid) return res.status(400).json({ error: "Invalid person ID." });
+  const curated = curatedPerson(pid);
+  if (!curated) return res.status(404).json({ error: "No trophy track for that person." });
+  try {
+    const [person, credits] = await Promise.all([personDetails(pid), personMovieCredits(pid)]);
+    const watchedIds = new Set(
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+        .all(req.user.id)
+        .map((r) => r.tmdb_id)
+    );
+    const films = filterFilmography(curated.role, credits).map((f) => ({
+      ...f,
+      watched: watchedIds.has(f.id),
+    }));
+    const watched = films.filter((f) => f.watched).length;
+    res.json({
+      id: pid,
+      role: curated.role,
+      name: person.name,
+      profile_path: person.profile_path,
+      biography: (person.biography || "").split("\n")[0] || null,
+      films,
+      watched,
+      total: films.length,
+      bonus: personBonus(films.length),
+      complete: films.length >= 3 && watched === films.length,
     });
   } catch (e) {
     next(e);
@@ -248,6 +330,7 @@ api.post("/watches", async (req, res, next) => {
 
     const newAchievements = await evaluate(req.user.id, {
       collection_id: m.belongs_to_collection?.id || null,
+      person_ids: notablePeopleInMovie(m.credits).map((p) => p.id),
     });
 
     res.json({

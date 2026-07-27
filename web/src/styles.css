@@ -172,6 +172,28 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
 .quick-log.done { background: var(--panel-2); color: var(--gold); border-color: var(--gold); }
 .quick-log:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
 
+/* ---- People (curated actors/directors) ---- */
+.person-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 14px;
+}
+.person-card { position: relative; }
+.person-card img {
+  width: 100%; aspect-ratio: 2/3; object-fit: cover;
+  border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); display: block;
+}
+.person-card .title { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.person-card .progress-bar { margin-top: 4px; }
+
+.people-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.people-chips .chip {
+  border: 1px solid var(--line); background: var(--panel);
+  border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 600;
+}
+.people-chips .chip:hover { border-color: var(--gold); color: var(--gold); }
+.people-chips .chip small { color: var(--dim); font-weight: 400; }
+
 /* ---- Ticket-stub achievements (signature element) ---- */
 .stub {
   position: relative;

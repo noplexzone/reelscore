@@ -40,8 +40,14 @@ async function tmdb(pathname, params = {}) {
 export const searchMovies = (q, page = 1) =>
   tmdb("/search/movie", { query: q, page, include_adult: "false" });
 
-export const movieDetails = (id) => tmdb(`/movie/${id}`);
+// Credits are appended so notable-people and filmography trophies can be
+// evaluated without a second fetch (one cache entry per movie either way).
+export const movieDetails = (id) => tmdb(`/movie/${id}`, { append_to_response: "credits" });
 
 export const collectionDetails = (id) => tmdb(`/collection/${id}`);
 
 export const trendingMovies = () => tmdb("/trending/movie/week");
+
+export const personDetails = (id) => tmdb(`/person/${id}`);
+
+export const personMovieCredits = (id) => tmdb(`/person/${id}/movie_credits`);

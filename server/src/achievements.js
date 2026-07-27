@@ -1,5 +1,6 @@
 import { db, currentStreak } from "./db.js";
-import { collectionDetails } from "./tmdb.js";
+import { collectionDetails, personDetails, personMovieCredits } from "./tmdb.js";
+import { curatedPerson, filterFilmography, personBonus } from "./people.js";
 
 // ---- Achievement catalog (v1) -------------------------------------------
 // Tiered achievements generated from metadata. Series completion is dynamic
@@ -141,7 +142,47 @@ export async function evaluate(userId, watch) {
     }
   }
 
+  // Filmography completion for curated actors/directors in this film
+  for (const pid of watch.person_ids || []) {
+    try {
+      const a = await checkPersonCompletion(userId, pid);
+      push(a);
+    } catch {
+      // TMDB hiccup — re-checked the next time one of their films is logged.
+    }
+  }
+
   return unlocked;
+}
+
+// Unlock `person:{id}` if the user has watched the person's entire
+// appropriate filmography. Returns the new achievement or null.
+export async function checkPersonCompletion(userId, personId) {
+  const curated = curatedPerson(personId);
+  if (!curated) return null;
+  const already = db
+    .prepare("SELECT 1 FROM achievements WHERE user_id = ? AND key = ?")
+    .get(userId, `person:${personId}`);
+  if (already) return null;
+
+  const films = filterFilmography(curated.role, await personMovieCredits(personId));
+  if (films.length < 3) return null;
+  const watchedIds = new Set(
+    db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+      .all(userId)
+      .map((r) => r.tmdb_id)
+  );
+  if (!films.every((f) => watchedIds.has(f.id))) return null;
+
+  const person = await personDetails(personId);
+  const verb = curated.role === "director" ? "directed by" : "starring";
+  return unlock(
+    userId,
+    `person:${personId}`,
+    `Filmography Complete: ${person.name}`,
+    `Watched all ${films.length} films ${verb} ${person.name}`,
+    personBonus(films.length)
+  );
 }
 
 // Progress toward locked tiers, for the achievements page.
