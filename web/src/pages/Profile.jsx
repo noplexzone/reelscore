@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "wouter";
 import { api, posterUrl, getUser } from "../api.js";
+import Connections from "../components/Connections.jsx";
 
 export default function Profile() {
   const { username } = useParams();
@@ -31,7 +32,14 @@ export default function Profile() {
   return (
     <>
       <div className="marquee">
-        <div className="label">{p.username}</div>
+        <div className="label">
+          {p.username}
+          {(p.connections || []).map((s) => (
+            <span className={`verified ${s}`} style={{ marginLeft: 8 }} key={s}>
+              ✓ {s}
+            </span>
+          ))}
+        </div>
         <div className="score">{p.score.toLocaleString()}</div>
         <div className="sub">
           <b>{p.watches}</b> films
@@ -39,8 +47,10 @@ export default function Profile() {
         </div>
       </div>
 
+      {isSelf && <Connections onSynced={load} />}
+
       {isSelf && (
-        <div className="card row" style={{ marginBottom: 20 }}>
+        <div className="card row" style={{ margin: "20px 0" }}>
           <div className="grow">
             <b>Public profile</b>
             <div className="muted">
@@ -86,6 +96,9 @@ export default function Profile() {
                 <div className="poster-fallback">{w.title}</div>
               )}
               <span className="badge">+{w.points}</span>
+              {w.source && w.source !== "manual" && (
+                <span className={`source-chip ${w.source}`}>✓ {w.source}</span>
+              )}
               <div className="title">{w.title}</div>
             </Link>
           ))}

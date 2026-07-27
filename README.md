@@ -22,6 +22,21 @@ search → log → score → achievements → friends.
 | Genres | 10 / 25 / 50 films per genre (auto-generated per genre) |
 | Decades | Films from 5 / 8 / 11 different decades |
 | Streaks | 3 / 7 / 30 consecutive days with a watch |
+| Filmographies | Watch a curated actor's or director's entire marquee filmography (Actors tab) → `500 + 25/film` bonus |
+
+## Plex & Trakt sync
+
+Link a service on your profile page and import your watch history — synced
+films carry a **verified badge** proving they're really in your service's
+history, unlike manually logged entries. A manual log is upgraded in place if
+the service has the same film on the same day.
+
+- **Trakt** — requires the server admin to set `TRAKT_CLIENT_ID` /
+  `TRAKT_CLIENT_SECRET` (free app at trakt.tv/oauth/applications). Linking uses
+  the device-code flow: enter a short code at trakt.tv/activate.
+- **Plex** — paste your server URL and an `X-Plex-Token`
+  ([how to find yours](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)).
+  Watched movies (with TMDB ids) import with their last-viewed dates.
 
 ## Social
 

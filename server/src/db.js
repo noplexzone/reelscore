@@ -49,6 +49,18 @@ CREATE TABLE IF NOT EXISTS achievements (
   UNIQUE(user_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS connections (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  service TEXT NOT NULL,               -- plex | trakt
+  access_token TEXT,
+  refresh_token TEXT,
+  server_url TEXT,                     -- plex only
+  service_username TEXT,
+  connected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_synced_at TEXT,
+  PRIMARY KEY (user_id, service)
+);
+
 CREATE TABLE IF NOT EXISTS friends (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   friend_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
