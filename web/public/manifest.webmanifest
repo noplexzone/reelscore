@@ -1,0 +1,12 @@
+{
+  "name": "Reelscore",
+  "short_name": "Reelscore",
+  "description": "Movie watching as an achievements board",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10131E",
+  "theme_color": "#10131E",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

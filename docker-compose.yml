@@ -1,0 +1,12 @@
+services:
+  reelscore:
+    build: .
+    container_name: reelscore
+    ports:
+      - "3210:3000"
+    environment:
+      - TMDB_API_KEY=${TMDB_API_KEY:?Set TMDB_API_KEY in .env}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
