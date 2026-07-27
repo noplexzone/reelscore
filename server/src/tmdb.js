@@ -1,4 +1,5 @@
-const BASE = "https://api.themoviedb.org/3";
+// Overridable so tests can point at a local stub (server/test/stub/tmdb-stub.js).
+const BASE = process.env.TMDB_BASE_URL || "https://api.themoviedb.org/3";
 const KEY = process.env.TMDB_API_KEY || "";
 
 // Simple in-memory cache with TTL to be gentle on TMDB.

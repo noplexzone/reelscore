@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "wouter";
 import { api, posterUrl } from "../api.js";
 import { useToast } from "../App.jsx";
+import QuickLog from "../components/QuickLog.jsx";
 
 export default function Movie() {
   const { id } = useParams();
@@ -134,6 +135,7 @@ export default function Movie() {
                   <div className="poster-fallback">{p.title}</div>
                 )}
                 {p.watched && <span className="badge watched">✓</span>}
+                <QuickLog tmdbId={p.id} title={p.title} onLogged={load} />
                 <div className="title">{p.title}</div>
               </Link>
             ))}

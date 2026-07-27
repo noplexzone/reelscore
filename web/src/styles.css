@@ -134,6 +134,20 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
 }
 .badge.watched { border-color: var(--line); color: var(--dim); }
 
+.quick-log {
+  position: absolute; top: 6px; left: 6px;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--gold); color: var(--ink);
+  border: 1px solid var(--ink);
+  font-size: 18px; line-height: 1; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.quick-log:hover { filter: brightness(1.1); transform: scale(1.06); }
+.quick-log:disabled { background: var(--panel-2); color: var(--dim); cursor: default; }
+.quick-log.done { background: var(--panel-2); color: var(--gold); border-color: var(--gold); }
+.quick-log:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
+
 /* ---- Ticket-stub achievements (signature element) ---- */
 .stub {
   position: relative;

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { api, posterUrl } from "../api.js";
+import QuickLog from "../components/QuickLog.jsx";
 
 export default function Search() {
   const [q, setQ] = useState("");
@@ -35,6 +36,7 @@ export default function Search() {
             ) : (
               <div className="poster-fallback">{m.title}</div>
             )}
+            <QuickLog tmdbId={m.id} title={m.title} />
             <div className="title">{m.title}</div>
             <div className="muted">{(m.release_date || "").slice(0, 4)}</div>
           </Link>
