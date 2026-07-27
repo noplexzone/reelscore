@@ -11,7 +11,6 @@ search → log → score → achievements → friends.
 - Base points per watch: `100 × (rating/10)² × clamp(runtime/120, 0.5, 2)`
   — an average film lands around 40–60 pts, an acclaimed 3-hour epic near 150.
 - Rewatches pay **25%** of base. Rewatching the same film within **30 days** pays 0.
-- Soft anti-abuse: max 26 hours of logged runtime per day.
 - Achievements pay bonus points on top (see `server/src/achievements.js`).
 
 ## Achievements in v0.1
