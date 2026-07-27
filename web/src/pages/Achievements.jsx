@@ -84,8 +84,10 @@ export default function Achievements() {
         ))}
       </div>
       <p className="muted" style={{ marginTop: 16 }}>
-        Genre trophies (10 / 25 / 50 films per genre) and series completions unlock
-        automatically as you log — they'll appear here the moment you earn them.
+        Genre trophies (10 / 25 / 50 films per genre), series completions, and
+        filmography trophies for marquee actors and directors (see the Actors
+        tab) unlock automatically as you log — they'll appear here the moment
+        you earn them.
       </p>
     </>
   );

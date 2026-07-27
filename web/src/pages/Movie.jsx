@@ -86,6 +86,15 @@ export default function Movie() {
             {m.genres?.length ? ` · ${m.genres.join(", ")}` : ""}
           </p>
           <p>{m.overview}</p>
+          {m.notable_people?.length > 0 && (
+            <div className="people-chips">
+              {m.notable_people.map((np) => (
+                <Link className="chip" to={`/person/${np.id}`} key={np.id}>
+                  {np.name} <small>{np.role === "director" ? "· director" : ""}</small>
+                </Link>
+              ))}
+            </div>
+          )}
           <div className="row" style={{ flexWrap: "wrap" }}>
             <button className="btn" onClick={logWatch} disabled={busy}>
               {m.my_watches.length > 0 ? "Log rewatch" : "Log watch"}

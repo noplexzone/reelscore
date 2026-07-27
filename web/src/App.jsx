@@ -8,6 +8,8 @@ import Movie from "./pages/Movie.jsx";
 import Achievements from "./pages/Achievements.jsx";
 import Friends from "./pages/Friends.jsx";
 import Profile from "./pages/Profile.jsx";
+import Actors from "./pages/Actors.jsx";
+import Person from "./pages/Person.jsx";
 
 const ToastCtx = createContext(() => {});
 export const useToast = () => useContext(ToastCtx);
@@ -49,6 +51,7 @@ function Nav() {
       <div className="nav-links">
         <ActiveLink to="/" exact>Home</ActiveLink>
         <ActiveLink to="/search">Search</ActiveLink>
+        <ActiveLink to="/actors">Actors</ActiveLink>
         <ActiveLink to="/achievements">Trophies</ActiveLink>
         <ActiveLink to="/friends">Friends</ActiveLink>
         {u && <ActiveLink to={`/u/${u.username}`}>Me</ActiveLink>}
@@ -93,6 +96,8 @@ export default function App() {
             <Route path="/login"><Login /></Route>
             <Route path="/search"><Protected><Search /></Protected></Route>
             <Route path="/movie/:id"><Protected><Movie /></Protected></Route>
+            <Route path="/actors"><Protected><Actors /></Protected></Route>
+            <Route path="/person/:id"><Protected><Person /></Protected></Route>
             <Route path="/achievements"><Protected><Achievements /></Protected></Route>
             <Route path="/friends"><Protected><Friends /></Protected></Route>
             <Route path="/u/:username"><Protected><Profile /></Protected></Route>
