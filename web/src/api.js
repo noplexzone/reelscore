@@ -1,8 +1,16 @@
 let token = null;
 let user = null;
 try {
-  token = window.sessionStorage?.getItem("rs_token") || null;
-  user = JSON.parse(window.sessionStorage?.getItem("rs_user") || "null");
+  // Migrate existing session from sessionStorage (pre-v0.1 installs).
+  const migToken = window.sessionStorage?.getItem("rs_token");
+  if (migToken) {
+    window.localStorage?.setItem("rs_token", migToken);
+    window.localStorage?.setItem("rs_user", window.sessionStorage?.getItem("rs_user") || "null");
+    window.sessionStorage?.removeItem("rs_token");
+    window.sessionStorage?.removeItem("rs_user");
+  }
+  token = window.localStorage?.getItem("rs_token") || null;
+  user = JSON.parse(window.localStorage?.getItem("rs_user") || "null");
 } catch { /* storage unavailable — stay in-memory */ }
 
 export function getUser() { return user; }
@@ -11,16 +19,16 @@ export function isAuthed() { return !!token; }
 export function setSession(t, u) {
   token = t; user = u;
   try {
-    window.sessionStorage?.setItem("rs_token", t);
-    window.sessionStorage?.setItem("rs_user", JSON.stringify(u));
+    window.localStorage?.setItem("rs_token", t);
+    window.localStorage?.setItem("rs_user", JSON.stringify(u));
   } catch {}
 }
 
 export function clearSession() {
   token = null; user = null;
   try {
-    window.sessionStorage?.removeItem("rs_token");
-    window.sessionStorage?.removeItem("rs_user");
+    window.localStorage?.removeItem("rs_token");
+    window.localStorage?.removeItem("rs_user");
   } catch {}
 }
 

@@ -1,16 +1,16 @@
 # ---- Build the web app ----
-FROM node:22-alpine AS webbuild
+FROM node:22.22.0-alpine3.22 AS webbuild
 WORKDIR /web
-COPY web/package.json ./
-RUN npm install
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
 COPY web/ ./
 RUN npm run build
 
 # ---- Server ----
-FROM node:22-alpine
+FROM node:22.22.0-alpine3.22
 WORKDIR /app
-COPY server/package.json ./
-RUN npm install --omit=dev
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --omit=dev
 COPY server/src ./src
 COPY --from=webbuild /web/dist ./web-dist
 

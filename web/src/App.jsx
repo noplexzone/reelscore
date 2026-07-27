@@ -1,7 +1,5 @@
 import React, { createContext, useContext, useState, useCallback } from "react";
-import {
-  BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate,
-} from "react-router-dom";
+import { Router, Switch, Route, Link, Redirect, useLocation } from "wouter";
 import { isAuthed, clearSession, getUser } from "./api.js";
 import Login from "./pages/Login.jsx";
 import Home from "./pages/Home.jsx";
@@ -29,18 +27,31 @@ function Toasts({ toasts }) {
   );
 }
 
+function ActiveLink({ to, exact = false, children, className = "", ...props }) {
+  const [location] = useLocation();
+  const isActive = exact
+    ? location === to
+    : location === to || location.startsWith(to + "/");
+  const cls = [className, isActive ? "active" : ""].filter(Boolean).join(" ");
+  return (
+    <Link to={to} className={cls || undefined} {...props}>
+      {children}
+    </Link>
+  );
+}
+
 function Nav() {
-  const navigate = useNavigate();
+  const [, navigate] = useLocation();
   const u = getUser();
   return (
     <nav className="nav">
-      <NavLink to="/" className="brand">REEL<em>SCORE</em></NavLink>
+      <ActiveLink to="/" exact className="brand">REEL<em>SCORE</em></ActiveLink>
       <div className="nav-links">
-        <NavLink to="/" end>Home</NavLink>
-        <NavLink to="/search">Search</NavLink>
-        <NavLink to="/achievements">Trophies</NavLink>
-        <NavLink to="/friends">Friends</NavLink>
-        {u && <NavLink to={`/u/${u.username}`}>Me</NavLink>}
+        <ActiveLink to="/" exact>Home</ActiveLink>
+        <ActiveLink to="/search">Search</ActiveLink>
+        <ActiveLink to="/achievements">Trophies</ActiveLink>
+        <ActiveLink to="/friends">Friends</ActiveLink>
+        {u && <ActiveLink to={`/u/${u.username}`}>Me</ActiveLink>}
         <a
           href="/login"
           onClick={(e) => { e.preventDefault(); clearSession(); navigate("/login"); }}
@@ -53,7 +64,7 @@ function Nav() {
 }
 
 function Protected({ children }) {
-  if (!isAuthed()) return <Navigate to="/login" replace />;
+  if (!isAuthed()) return <Redirect to="/login" />;
   return (
     <>
       <Nav />
@@ -76,21 +87,21 @@ export default function App() {
 
   return (
     <ToastCtx.Provider value={pushToast}>
-      <BrowserRouter>
+      <Router>
         <div className="app">
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/" element={<Protected><Home /></Protected>} />
-            <Route path="/search" element={<Protected><Search /></Protected>} />
-            <Route path="/movie/:id" element={<Protected><Movie /></Protected>} />
-            <Route path="/achievements" element={<Protected><Achievements /></Protected>} />
-            <Route path="/friends" element={<Protected><Friends /></Protected>} />
-            <Route path="/u/:username" element={<Protected><Profile /></Protected>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Switch>
+            <Route path="/login"><Login /></Route>
+            <Route path="/search"><Protected><Search /></Protected></Route>
+            <Route path="/movie/:id"><Protected><Movie /></Protected></Route>
+            <Route path="/achievements"><Protected><Achievements /></Protected></Route>
+            <Route path="/friends"><Protected><Friends /></Protected></Route>
+            <Route path="/u/:username"><Protected><Profile /></Protected></Route>
+            <Route path="/"><Protected><Home /></Protected></Route>
+            <Route><Redirect to="/" /></Route>
+          </Switch>
           <Toasts toasts={toasts} />
         </div>
-      </BrowserRouter>
+      </Router>
     </ToastCtx.Provider>
   );
 }

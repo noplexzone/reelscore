@@ -6,8 +6,9 @@ import { authRouter } from "./auth.js";
 import { api } from "./routes/api.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "16kb" }));
 
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, tmdb: !!process.env.TMDB_API_KEY })
@@ -27,7 +28,10 @@ if (fs.existsSync(webDist)) {
 // Error handler
 app.use((err, _req, res, _next) => {
   const status = err.status || 500;
-  if (status >= 500) console.error(err);
+  if (status >= 500) {
+    console.error(err);
+    return res.status(status).json({ error: "Something went wrong." });
+  }
   res.status(status).json({ error: err.message || "Something went wrong." });
 });
 

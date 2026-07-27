@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Redirect, useLocation } from "wouter";
 import { api, setSession, isAuthed } from "../api.js";
 
 export default function Login() {
@@ -8,9 +8,9 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const navigate = useNavigate();
+  const [, navigate] = useLocation();
 
-  if (isAuthed()) { navigate("/"); return null; }
+  if (isAuthed()) return <Redirect to="/" />;
 
   async function submit(e) {
     e.preventDefault();

@@ -5,12 +5,14 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "test": "NODE_ENV=test DATA_DIR=/tmp/rs-test JWT_SECRET=test-secret-that-is-at-least-32-chars-long node --test test/scoring.test.js test/auth.test.js test/validation.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.3.0",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.5.1",
     "jsonwebtoken": "^9.0.2"
   }
 }

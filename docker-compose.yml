@@ -1,7 +1,11 @@
 services:
   reelscore:
+    image: noplexzone/reelscore:develop
     build: .
     container_name: reelscore
+    labels:
+      project: reelscore
+      managed-by: jarvis
     ports:
       - "3210:3000"
     environment:
@@ -10,3 +14,9 @@ services:
     volumes:
       - ./data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,22 +1,27 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { db } from "./db.js";
+import { JWT_SECRET } from "./config.js";
 
-const SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
-  console.warn("[reelscore] WARNING: set JWT_SECRET in production.");
-}
+const loginRegisterLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Please try again later." },
+});
 
 export const authRouter = Router();
 
 function issueToken(user) {
-  return jwt.sign({ id: user.id, username: user.username }, SECRET, {
+  return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, {
     expiresIn: "30d",
   });
 }
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", loginRegisterLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
     return res
@@ -36,7 +41,7 @@ authRouter.post("/register", async (req, res) => {
   res.json({ token: issueToken(user), user });
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", loginRegisterLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username || "");
   if (!user || !(await bcrypt.compare(password || "", user.password_hash))) {
@@ -53,7 +58,7 @@ export function requireAuth(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Sign in to continue." });
   try {
-    req.user = jwt.verify(token, SECRET);
+    req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
     res.status(401).json({ error: "Session expired. Sign in again." });

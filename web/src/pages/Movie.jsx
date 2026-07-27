@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link } from "wouter";
 import { api, posterUrl } from "../api.js";
 import { useToast } from "../App.jsx";
 
@@ -24,6 +24,16 @@ export default function Movie() {
       .catch((e) => setError(e.message));
   };
   useEffect(load, [id]);
+
+  async function deleteWatch(watchId) {
+    if (!window.confirm("Remove this watch entry? Earned achievements remain unlocked.")) return;
+    try {
+      await api(`/watches/${watchId}`, { method: "DELETE" });
+      setM((prev) => ({ ...prev, my_watches: prev.my_watches.filter((w) => w.id !== watchId) }));
+    } catch (e) {
+      setError(e.message);
+    }
+  }
 
   async function logWatch() {
     setBusy(true); setError("");
@@ -82,10 +92,25 @@ export default function Movie() {
             <span className="pts">worth ~{m.potential_points} pts</span>
           </div>
           {m.my_watches.length > 0 && (
-            <p className="muted" style={{ marginTop: 10 }}>
-              Watched {m.my_watches.length}×, last on{" "}
-              {new Date(m.my_watches[0].watched_at + "Z").toLocaleDateString()}
-            </p>
+            <div style={{ marginTop: 10 }}>
+              <p className="muted" style={{ marginBottom: 6 }}>
+                Watched {m.my_watches.length}× — history:
+              </p>
+              {m.my_watches.map((w) => (
+                <div key={w.id} className="row" style={{ gap: 8, marginBottom: 4 }}>
+                  <span className="muted">
+                    {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
+                  </span>
+                  <button
+                    className="btn ghost small"
+                    onClick={() => deleteWatch(w.id)}
+                    title="Remove this watch entry"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
           {error && <p className="error">{error}</p>}
         </div>

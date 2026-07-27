@@ -4,6 +4,7 @@ import { requireAuth } from "../auth.js";
 import { searchMovies, movieDetails, collectionDetails } from "../tmdb.js";
 import { watchPoints, basePoints } from "../scoring.js";
 import { evaluate, progress } from "../achievements.js";
+import { parsePositiveInt } from "../validation.js";
 
 export const api = Router();
 api.use(requireAuth);
@@ -56,11 +57,13 @@ api.get("/search", async (req, res, next) => {
 });
 
 api.get("/movie/:id", async (req, res, next) => {
+  const tmdbId = parsePositiveInt(req.params.id);
+  if (!tmdbId) return res.status(400).json({ error: "Invalid movie ID." });
   try {
-    const m = await movieDetails(req.params.id);
+    const m = await movieDetails(tmdbId);
     const watched = db
       .prepare(
-        "SELECT watched_at, points FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
+        "SELECT id, watched_at, points FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
       )
       .all(req.user.id, m.id);
     res.json({
@@ -85,8 +88,10 @@ api.get("/movie/:id", async (req, res, next) => {
 });
 
 api.get("/collection/:id", async (req, res, next) => {
+  const colId = parsePositiveInt(req.params.id);
+  if (!colId) return res.status(400).json({ error: "Invalid collection ID." });
   try {
-    const col = await collectionDetails(req.params.id);
+    const col = await collectionDetails(colId);
     const watchedIds = new Set(
       db
         .prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
@@ -116,8 +121,8 @@ api.get("/collection/:id", async (req, res, next) => {
 // ---- Watches ------------------------------------------------------------
 api.post("/watches", async (req, res, next) => {
   try {
-    const tmdbId = parseInt(req.body?.tmdb_id, 10);
-    if (!tmdbId) return res.status(400).json({ error: "tmdb_id is required." });
+    const tmdbId = parsePositiveInt(req.body?.tmdb_id);
+    if (!tmdbId) return res.status(400).json({ error: "tmdb_id must be a positive integer." });
 
     const m = await movieDetails(tmdbId);
 
@@ -194,10 +199,12 @@ api.get("/watches", (req, res) => {
 });
 
 api.delete("/watches/:id", (req, res) => {
-  db.prepare("DELETE FROM watches WHERE id = ? AND user_id = ?").run(
-    req.params.id,
-    req.user.id
-  );
+  const watchId = parsePositiveInt(req.params.id);
+  if (!watchId) return res.status(400).json({ error: "Invalid watch ID." });
+  const result = db
+    .prepare("DELETE FROM watches WHERE id = ? AND user_id = ?")
+    .run(watchId, req.user.id);
+  if (result.changes === 0) return res.status(404).json({ error: "Watch entry not found." });
   res.json({ ok: true });
 });
 
@@ -233,7 +240,8 @@ api.post("/friends/request", (req, res) => {
 });
 
 api.post("/friends/respond", (req, res) => {
-  const otherId = parseInt(req.body?.user_id, 10);
+  const otherId = parsePositiveInt(String(req.body?.user_id ?? ""));
+  if (!otherId) return res.status(400).json({ error: "user_id must be a positive integer." });
   const accept = !!req.body?.accept;
   const [a, b] = [Math.min(req.user.id, otherId), Math.max(req.user.id, otherId)];
   const row = db

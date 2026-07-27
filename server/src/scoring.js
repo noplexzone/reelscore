@@ -9,7 +9,7 @@ const REWATCH_RATE = 0.25;
 const REWATCH_COOLDOWN_DAYS = 30;
 
 export function basePoints({ voteAverage, runtime }) {
-  const rating = Math.min(Math.max(voteAverage || 5, 0), 10);
+  const rating = Math.min(Math.max(voteAverage ?? 5, 0), 10);
   const rt = runtime && runtime > 0 ? runtime : 100;
   const runtimeFactor = Math.min(Math.max(rt / 120, 0.5), 2);
   return Math.round(100 * Math.pow(rating / 10, 2) * runtimeFactor);

@@ -58,11 +58,6 @@ export async function evaluate(userId, watch) {
   }
 
   // Genres (first watch of each film counts once per film per genre)
-  const genreRows = db
-    .prepare(
-      `SELECT genres, COUNT(DISTINCT tmdb_id) FROM watches WHERE user_id = ? GROUP BY tmdb_id`
-    )
-    .all(userId);
   const genreCounts = {};
   const seen = new Set();
   const allWatches = db
