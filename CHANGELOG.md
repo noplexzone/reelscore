@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+- Daily runtime cap on logging watches (26 runtime-hours per calendar day). New users typically log their entire watch history on first login, which the cap blocked with a 429.
+
 ### Changed
 - Acceptance/CI image updated to `noplexzone/reelscore:develop`. Stable semver tags and `latest` are reserved for future promoted releases.
 - Custom in-memory rate limiter replaced with `express-rate-limit` ^7 (20 req / 15 min window on `/login` and `/register`).

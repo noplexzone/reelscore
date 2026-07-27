@@ -9,9 +9,6 @@ import { parsePositiveInt } from "../validation.js";
 export const api = Router();
 api.use(requireAuth);
 
-// Soft anti-abuse cap: no more than 26h of logged runtime per calendar day.
-const DAILY_RUNTIME_CAP_MIN = 26 * 60;
-
 function userSummary(u) {
   return {
     id: u.id,
@@ -125,19 +122,6 @@ api.post("/watches", async (req, res, next) => {
     if (!tmdbId) return res.status(400).json({ error: "tmdb_id must be a positive integer." });
 
     const m = await movieDetails(tmdbId);
-
-    // Daily runtime cap
-    const loggedToday = db
-      .prepare(
-        `SELECT COALESCE(SUM(runtime),0) s FROM watches
-         WHERE user_id = ? AND date(watched_at) = date('now')`
-      )
-      .get(req.user.id).s;
-    if (loggedToday + (m.runtime || 100) > DAILY_RUNTIME_CAP_MIN) {
-      return res.status(429).json({
-        error: "Daily limit reached. Even the projectionist sleeps — come back tomorrow.",
-      });
-    }
 
     const prior = db
       .prepare(
