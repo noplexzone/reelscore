@@ -94,6 +94,30 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
 .marquee .sub b { color: var(--cream); }
 .streak-flame { color: var(--velvet); font-weight: 700; }
 
+/* ---- Home stat strip ---- */
+.stat-strip {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  margin-bottom: 20px;
+}
+.stat-strip .stat {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 14px 8px; text-align: center;
+}
+.stat-strip .num {
+  font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: var(--gold);
+  line-height: 1.2;
+}
+.stat-strip .num.flame { color: var(--velvet); }
+.stat-strip .lbl {
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim);
+}
+
+.progress-bar {
+  height: 6px; border-radius: 3px; background: var(--panel-2);
+  border: 1px solid var(--line); overflow: hidden; margin: 6px 0 2px;
+}
+.progress-bar span { display: block; height: 100%; background: var(--gold); }
+
 /* ---- Cards / sections ---- */
 .section-title {
   font-family: var(--font-display);
