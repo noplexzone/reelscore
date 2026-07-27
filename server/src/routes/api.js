@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { db, totalScore, watchCount, currentStreak } from "../db.js";
 import { requireAuth } from "../auth.js";
-import { searchMovies, movieDetails, collectionDetails } from "../tmdb.js";
+import { searchMovies, movieDetails, collectionDetails, trendingMovies } from "../tmdb.js";
 import { watchPoints, basePoints } from "../scoring.js";
-import { evaluate, progress } from "../achievements.js";
+import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
 import { parsePositiveInt } from "../validation.js";
 
 export const api = Router();
@@ -30,6 +30,94 @@ api.post("/me/settings", (req, res) => {
   const pub = req.body?.public_profile ? 1 : 0;
   db.prepare("UPDATE users SET public_profile = ? WHERE id = ?").run(pub, req.user.id);
   res.json({ public_profile: !!pub });
+});
+
+// ---- Home dashboard -----------------------------------------------------
+api.get("/home", async (req, res, next) => {
+  try {
+    const uid = req.user.id;
+    const u = db.prepare("SELECT * FROM users WHERE id = ?").get(uid);
+    const watchedIds = new Set(
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?").all(uid).map((r) => r.tmdb_id)
+    );
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Series the user has started but not finished, most recently watched first.
+    const startedCols = db
+      .prepare(
+        `SELECT collection_id id, MAX(watched_at) last FROM watches
+         WHERE user_id = ? AND collection_id IS NOT NULL
+         GROUP BY collection_id ORDER BY last DESC LIMIT 8`
+      )
+      .all(uid);
+    const continueSeries = [];
+    for (const c of startedCols) {
+      if (continueSeries.length >= 4) break;
+      try {
+        const col = await collectionDetails(c.id);
+        const parts = (col.parts || [])
+          .filter((p) => p.release_date && p.release_date <= today)
+          .sort((a, b) => (a.release_date < b.release_date ? -1 : 1));
+        const done = parts.filter((p) => watchedIds.has(p.id));
+        const next = parts.find((p) => !watchedIds.has(p.id));
+        if (parts.length >= 2 && next) {
+          continueSeries.push({
+            id: col.id,
+            name: col.name.replace(/ Collection$/i, ""),
+            watched: done.length,
+            total: parts.length,
+            bonus: 250 + 50 * parts.length,
+            next: { id: next.id, title: next.title, poster_path: next.poster_path },
+          });
+        }
+      } catch {
+        // TMDB hiccup — leave this series out of the list this time.
+      }
+    }
+
+    // Closest locked trophies across the tiered categories.
+    const unlockedKeys = new Set(
+      db.prepare("SELECT key FROM achievements WHERE user_id = ?").all(uid).map((r) => r.key)
+    );
+    const p = progress(uid);
+    const candidates = [
+      ...VOLUME_TIERS.filter((t) => !unlockedKeys.has(`volume:${t.n}`)).map((t) => ({
+        name: t.name, desc: t.desc, points: t.points, have: Math.min(p.volume, t.n), need: t.n,
+      })),
+      ...DECADE_TIERS.filter((t) => !unlockedKeys.has(`decades:${t.n}`)).map((t) => ({
+        name: t.name, desc: t.desc, points: t.points, have: Math.min(p.decades, t.n), need: t.n,
+      })),
+      ...STREAK_TIERS.filter((t) => !unlockedKeys.has(`streak:${t.n}`)).map((t) => ({
+        name: t.name, desc: t.desc, points: t.points, have: Math.min(p.streak, t.n), need: t.n,
+      })),
+    ];
+    candidates.sort((a, b) => b.have / b.need - a.have / a.need || a.points - b.points);
+    const nextTrophies = candidates.slice(0, 3);
+
+    let trending = [];
+    try {
+      const data = await trendingMovies();
+      trending = (data.results || []).slice(0, 10).map((m) => ({
+        id: m.id,
+        title: m.title,
+        release_date: m.release_date,
+        poster_path: m.poster_path,
+        vote_average: m.vote_average,
+        watched: watchedIds.has(m.id),
+      }));
+    } catch {
+      // Trending is decorative — the dashboard still works without it.
+    }
+
+    res.json({
+      me: userSummary(u),
+      continue_series: continueSeries,
+      next_trophies: nextTrophies,
+      trending,
+    });
+  } catch (e) {
+    next(e);
+  }
 });
 
 // ---- Movies -------------------------------------------------------------

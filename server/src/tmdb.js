@@ -43,3 +43,5 @@ export const searchMovies = (q, page = 1) =>
 export const movieDetails = (id) => tmdb(`/movie/${id}`);
 
 export const collectionDetails = (id) => tmdb(`/collection/${id}`);
+
+export const trendingMovies = () => tmdb("/trending/movie/week");
