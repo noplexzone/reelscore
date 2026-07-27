@@ -23,7 +23,7 @@ export default function Movie() {
       })
       .catch((e) => setError(e.message));
   };
-  useEffect(load, [id]);
+  useEffect(() => { load(); }, [id]);
 
   async function deleteWatch(watchId) {
     if (!window.confirm("Remove this watch entry? Earned achievements remain unlocked.")) return;

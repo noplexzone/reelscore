@@ -13,7 +13,9 @@ export default function Profile() {
     api(`/users/${encodeURIComponent(username)}`)
       .then((data) => { setP(data); setError(""); })
       .catch((e) => setError(e.message));
-  useEffect(load, [username]);
+  // Don't pass `load` directly to useEffect — it returns a promise, which
+  // React would try to call as the effect cleanup and crash on unmount.
+  useEffect(() => { load(); }, [username]);
 
   async function togglePublic() {
     await api("/me/settings", {
