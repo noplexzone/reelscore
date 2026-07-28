@@ -112,7 +112,7 @@ authRouter.post("/register", authLimiter, async (req, res) => {
     const invite = db
       .prepare(
         `SELECT * FROM invites WHERE token_hash = ? AND revoked = 0
-         AND used_by IS NULL AND datetime(expires_at) > datetime('now')`
+         AND used_by IS NULL AND julianday(expires_at) > julianday('now')`
       )
       .get(codeHash);
     if (!invite) {
@@ -249,7 +249,7 @@ export function requireAuth(req, res, next) {
               u.id, u.username, u.role, u.status
        FROM sessions s
        JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND datetime(s.expires_at) > datetime('now')
+       WHERE s.token_hash = ? AND julianday(s.expires_at) > julianday('now')
          AND COALESCE(s.last_seen_at,s.created_at) > datetime('now', '-7 days')`
     )
     .get(tokenHash);

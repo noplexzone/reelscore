@@ -332,7 +332,7 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
     if (selected.some((candidate) => !candidate)) { const error = new Error("A selected candidate was not in this preview."); error.status = 400; throw error; }
 
     const consumed = db.prepare(`UPDATE reconciliation_previews SET consumed_at=datetime('now')
-      WHERE nonce_hash=? AND consumed_at IS NULL AND datetime(expires_at)>datetime('now')`).run(digest(nonce));
+      WHERE nonce_hash=? AND consumed_at IS NULL AND julianday(expires_at)>julianday('now')`).run(digest(nonce));
     if (consumed.changes !== 1) {
       const error = new Error("Reconciliation preview is invalid, expired, or already used.");
       error.status = 409;

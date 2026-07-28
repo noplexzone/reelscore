@@ -10,12 +10,12 @@ import { startTestServer, parseCookies, rawSetCookies, cookieHas } from "./helpe
 
 let srv;
 let adminCookie, adminCsrf;
-let db, createSession, sessionTokenHash;
+let db, createSession, sessionTokenHash, requireAuth;
 
 before(async () => {
   srv = await startTestServer();
   ({ db } = await import("../src/db.js"));
-  ({ createSession, sessionTokenHash } = await import("../src/auth.js"));
+  ({ createSession, sessionTokenHash, requireAuth } = await import("../src/auth.js"));
 
   // Register the first user (becomes admin after migration bootstrap).
   const r = await fetch(`${srv.base}/api/auth/register`, {
@@ -82,6 +82,23 @@ test("idle sessions expire after seven days", async () => {
   db.prepare("UPDATE sessions SET last_seen_at=datetime('now','-8 days') WHERE user_id=?").run(id);
   const response = await fetch(`${srv.base}/api/me`, { headers: { Cookie: `session=${session.token}` } });
   assert.equal(response.status, 401);
+});
+
+test("ISO session expiry retains subsecond precision", async () => {
+  while (Date.now() % 1000 > 150) await new Promise((resolve) => setTimeout(resolve, 10));
+  const id = Number(db.prepare("INSERT INTO users (username,password_hash) VALUES ('subseconduser','hash')").run().lastInsertRowid);
+  const session = createSession(id);
+  db.prepare("UPDATE sessions SET expires_at=? WHERE token_hash=?")
+    .run(new Date(Date.now() + 700).toISOString(), sessionTokenHash(session.token));
+  let passed = false;
+  const req = { cookies: { session: session.token } };
+  const res = {
+    status() { return this; },
+    json() { return this; },
+    clearCookie() { return this; },
+  };
+  requireAuth(req, res, () => { passed = true; });
+  assert.equal(passed, true, "a session with subsecond validity remaining must not expire early");
 });
 
 test("absolute session expiry is enforced immediately and removes the server row", async () => {
