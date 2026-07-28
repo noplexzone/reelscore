@@ -1,0 +1,41 @@
+services:
+  reelscore:
+    image: noplexzone/reelscore:develop
+    container_name: reelscore
+    user: "99:100"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY:?required}
+      APP_MODE: hosted
+      SESSION_SECRET: ${SESSION_SECRET:?required}
+      PUBLIC_URL: ${PUBLIC_URL:?required}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
+      TRUST_PROXY: "1"
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?required}
+      PLEX_CLIENT_ID: ${PLEX_CLIENT_ID:?required}
+      PLEX_ALLOWED_SERVER_ID: ${PLEX_ALLOWED_SERVER_ID:?required}
+      TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID:-}
+      TRAKT_CLIENT_SECRET: ${TRAKT_CLIENT_SECRET:-}
+    volumes:
+      - /mnt/user/appdata/reelscore:/data
+    networks:
+      - reelscore-tunnel
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  reelscore-tunnel:
+    name: reelscore-tunnel
+    internal: true
