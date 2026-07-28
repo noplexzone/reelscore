@@ -1,6 +1,6 @@
 # Hosted ReelScore deployment
 
-Hosted mode uses the normal ReelScore image, but it **must** use a separate container, hostname, secrets, tunnel, and data directory from the private instance. `docker-compose.hosted.yml` publishes no ReelScore port. ReelScore is attached only to an internal application network; cloudflared is dual-homed to that network and an egress network.
+Hosted mode uses the normal ReelScore image, but it **must** use a separate container, hostname, secrets, tunnel, and data directory from the private instance. `docker-compose.hosted.yml` publishes no ReelScore port. ReelScore and cloudflared share only an internal origin network; each also has its own separate egress network.
 
 ## Required configuration
 
