@@ -49,37 +49,33 @@ export function tableExists(name) {
 
 export function createBackup() {
   const backupsDir = path.join(DATA_DIR, "backups");
-  fs.mkdirSync(backupsDir, { recursive: true });
+  fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
 
-  // Timestamp: 20260728T024834Z
   const ts = new Date()
     .toISOString()
     .replace(/[-:]/g, "")
-    .replace(/\.\d{3}/, "")
-    .replace("T", "T");
+    .replace(/\.\d{3}/, "");
   const backupPath = path.join(backupsDir, `reelscore-pre-hosted-${ts}.db`);
 
-  // Checkpoint WAL so the DB file contains all committed data.
-  db.pragma("wal_checkpoint(FULL)");
-
   try {
-    fs.copyFileSync(DB_PATH, backupPath);
-  } catch {
-    // DB file doesn't exist yet (fresh install) — no backup needed.
-    return { path: null, ok: false };
+    // VACUUM INTO is a transactionally consistent SQLite snapshot. Unlike a
+    // filesystem copy, it includes committed WAL frames even when another
+    // connection prevents checkpointing.
+    db.prepare("VACUUM INTO ?").run(backupPath);
+    fs.chmodSync(backupPath, 0o600);
+
+    const sourceCheck = db.pragma("integrity_check");
+    const bdb = new Database(backupPath, { readonly: true, fileMustExist: true });
+    const backupCheck = bdb.pragma("integrity_check");
+    bdb.close();
+    const sourceOk = sourceCheck?.[0]?.integrity_check === "ok";
+    const backupOk = backupCheck?.[0]?.integrity_check === "ok";
+    if (!sourceOk || !backupOk) throw new Error("SQLite integrity check failed.");
+    return { path: backupPath, ok: true };
+  } catch (error) {
+    try { fs.rmSync(backupPath, { force: true }); } catch {}
+    throw new Error(`[reelscore] Pre-migration backup failed: ${error.message}`);
   }
-
-  // Integrity-check the backup.
-  const bdb = new Database(backupPath, { readonly: true });
-  const check = bdb.pragma("integrity_check");
-  bdb.close();
-
-  const ok =
-    Array.isArray(check) &&
-    check.length > 0 &&
-    check[0]?.integrity_check === "ok";
-
-  return { path: backupPath, ok };
 }
 
 // ---------------------------------------------------------------------------

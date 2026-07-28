@@ -111,7 +111,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 // Now import db.js (which calls runMigrations on the legacy DB).
 // ---------------------------------------------------------------------------
 
-const { db, runMigrations, tableExists, DATA_DIR: DD } = await import("../src/db.js");
+const { db, runMigrations, createBackup, tableExists, DATA_DIR: DD } = await import("../src/db.js");
 
 test("migration: original users are preserved", () => {
   const users = db.prepare("SELECT * FROM users ORDER BY id").all();
@@ -215,4 +215,26 @@ test("migration: watches have provider_event_id column", () => {
     info.some((c) => c.name === "provider_event_id"),
     "provider_event_id column exists"
   );
+});
+
+test("backup includes committed WAL rows when a reader prevents checkpointing", () => {
+  const reader = new Database(DB_PATH);
+  reader.pragma("journal_mode = WAL");
+  reader.exec("BEGIN");
+  reader.prepare("SELECT COUNT(*) FROM users").get();
+
+  const marker = `wal_${process.pid}`;
+  db.prepare("INSERT INTO users (username, password_hash) VALUES (?, 'marker')").run(marker);
+  const checkpoint = db.pragma("wal_checkpoint(FULL)")[0];
+  assert.ok(checkpoint.busy > 0, "reader keeps committed data in WAL");
+
+  const backup = createBackup();
+  const bdb = new Database(backup.path, { readonly: true });
+  assert.ok(bdb.prepare("SELECT id FROM users WHERE username = ?").get(marker), "backup contains committed WAL row");
+  assert.equal(bdb.pragma("integrity_check")[0].integrity_check, "ok");
+  bdb.close();
+
+  reader.exec("ROLLBACK");
+  reader.close();
+  db.prepare("DELETE FROM users WHERE username = ?").run(marker);
 });
