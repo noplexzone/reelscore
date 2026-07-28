@@ -10,7 +10,7 @@ Hosted mode uses the normal ReelScore image, but it **must** use a separate cont
 4. Set `PLEX_ALLOWED_SERVER_ID`, `PLEX_CLIENT_IDENTIFIER`, and `PLEX_ALLOWED_ORIGINS`. Every credential-bearing Plex destination must match an exact independently configured origin before ReelScore sends a token.
 5. Keep `REGISTRATION_MODE=invite` or `closed`.
 6. Store the dedicated tunnel token in a mode-0600 file and set `CLOUDFLARE_TUNNEL_TOKEN_FILE` to its absolute path. Compose mounts it as a secret. The tunnel origin is `http://reelscore-hosted:3000`.
-7. Do not publish port 3000/3210. The Compose file trusts only the pinned cloudflared peer (`172.29.0.2/32`), never a forwarded-hop count.
+7. Do not publish port 3000/3210. The Compose file trusts only the pinned cloudflared peer (`172.29.0.2/32`), never a forwarded-hop count. Cloudflared and ReelScore share only the internal origin network; each has a separate outbound-only bridge network so provider traffic works without making the application reachable from unrelated containers.
 
 ## First administrator
 
