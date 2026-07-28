@@ -15,8 +15,11 @@ export function recomputeUserWatchScores(userId, tmdbIds = null, { preserveManua
         .filter((id) => Number.isInteger(id) && id > 0);
   if (affected && affected.length === 0) return;
   const scope = affected ? ` AND tmdb_id IN (${affected.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`SELECT id,tmdb_id,vote_average,runtime,watched_at,source
-    FROM watches WHERE user_id=?${scope} ORDER BY watched_at ASC,id ASC`).all(userId, ...(affected || []));
+  const rows = db.prepare(`SELECT id,tmdb_id,vote_average,runtime,watched_at,source,provider_event_id
+    FROM watches WHERE user_id=?${scope}
+    ORDER BY watched_at ASC,
+      CASE WHEN provider_event_id IS NULL THEN 'manual:' || printf('%020d',id)
+           ELSE 'provider:' || provider_event_id END ASC`).all(userId, ...(affected || []));
   const priorByMovie = new Map();
   const preserved = new Set(preserveIds.map(Number));
   const update = db.prepare("UPDATE watches SET points=?,is_rewatch=? WHERE id=?");
@@ -329,7 +332,7 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
     if (selected.some((candidate) => !candidate)) { const error = new Error("A selected candidate was not in this preview."); error.status = 400; throw error; }
 
     const consumed = db.prepare(`UPDATE reconciliation_previews SET consumed_at=datetime('now')
-      WHERE nonce_hash=? AND consumed_at IS NULL AND expires_at>datetime('now')`).run(digest(nonce));
+      WHERE nonce_hash=? AND consumed_at IS NULL AND datetime(expires_at)>datetime('now')`).run(digest(nonce));
     if (consumed.changes !== 1) {
       const error = new Error("Reconciliation preview is invalid, expired, or already used.");
       error.status = 409;
@@ -343,7 +346,16 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
       if (removeProvider.run(candidate.provider_watch_id, targetUserId, candidate.provider_event_id).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
       if (updateManual.run(candidate.provider_watched_at, candidate.source, candidate.provider_service, candidate.provider_connection_id, candidate.provider_event_id, candidate.manual_watch_id, targetUserId, candidate.manual_watched_at).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
     }
-    recomputeUserWatchScores(targetUserId, selected.map((candidate) => candidate.tmdb_id), { preserveManual: true });
+    const selectedRowIds = new Set(selected.map((candidate) => candidate.manual_watch_id));
+    const affectedMovieIds = [...new Set(selected.map((candidate) => candidate.tmdb_id))];
+    const placeholders = affectedMovieIds.map(() => "?").join(",");
+    const preserveIds = db.prepare(`SELECT id FROM watches WHERE user_id=? AND tmdb_id IN (${placeholders})`)
+      .all(targetUserId, ...affectedMovieIds)
+      .map((row) => row.id)
+      .filter((id) => !selectedRowIds.has(id));
+    // Re-score only the rows explicitly selected for conversion. Manual rows and
+    // every unselected provider row remain byte-for-byte unchanged.
+    recomputeUserWatchScores(targetUserId, affectedMovieIds, { preserveManual: true, preserveIds });
     const detail = stableJson({
       actor_user_id: actorUserId,
       target_user_id: targetUserId,

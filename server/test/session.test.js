@@ -10,12 +10,12 @@ import { startTestServer, parseCookies, rawSetCookies, cookieHas } from "./helpe
 
 let srv;
 let adminCookie, adminCsrf;
-let db, createSession;
+let db, createSession, sessionTokenHash;
 
 before(async () => {
   srv = await startTestServer();
   ({ db } = await import("../src/db.js"));
-  ({ createSession } = await import("../src/auth.js"));
+  ({ createSession, sessionTokenHash } = await import("../src/auth.js"));
 
   // Register the first user (becomes admin after migration bootstrap).
   const r = await fetch(`${srv.base}/api/auth/register`, {
@@ -82,6 +82,17 @@ test("idle sessions expire after seven days", async () => {
   db.prepare("UPDATE sessions SET last_seen_at=datetime('now','-8 days') WHERE user_id=?").run(id);
   const response = await fetch(`${srv.base}/api/me`, { headers: { Cookie: `session=${session.token}` } });
   assert.equal(response.status, 401);
+});
+
+test("absolute session expiry is enforced immediately and removes the server row", async () => {
+  const id = Number(db.prepare("INSERT INTO users (username,password_hash) VALUES ('expireduser','hash')").run().lastInsertRowid);
+  const session = createSession(id);
+  const tokenHash = sessionTokenHash(session.token);
+  db.prepare("UPDATE sessions SET expires_at=datetime('now','-1 second') WHERE token_hash=?").run(tokenHash);
+  const response = await fetch(`${srv.base}/api/me`, { headers: { Cookie: `session=${session.token}` } });
+  assert.equal(response.status, 401);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sessions WHERE token_hash=?").get(tokenHash).c, 0);
+  assert.match(response.headers.get("set-cookie") || "", /session=;/i);
 });
 
 test("login: self_hosted cookie is NOT Secure (HTTP LAN safe)", async () => {

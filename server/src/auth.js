@@ -47,7 +47,7 @@ export function createSession(userId, { ip = null, userAgent = null } = {}) {
   const token = randomHex(32);
   const csrfToken = randomHex(32);
   const tokenHash = sessionTokenHash(token);
-  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString().replace("T", " ").slice(0, 19);
 
   db.prepare(
     `INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, ip, user_agent, last_seen_at)
@@ -112,7 +112,7 @@ authRouter.post("/register", authLimiter, async (req, res) => {
     const invite = db
       .prepare(
         `SELECT * FROM invites WHERE token_hash = ? AND revoked = 0
-         AND used_by IS NULL AND expires_at > datetime('now')`
+         AND used_by IS NULL AND datetime(expires_at) > datetime('now')`
       )
       .get(codeHash);
     if (!invite) {
@@ -249,12 +249,16 @@ export function requireAuth(req, res, next) {
               u.id, u.username, u.role, u.status
        FROM sessions s
        JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > datetime('now')
+       WHERE s.token_hash = ? AND datetime(s.expires_at) > datetime('now')
          AND COALESCE(s.last_seen_at,s.created_at) > datetime('now', '-7 days')`
     )
     .get(tokenHash);
 
-  if (!session) return res.status(401).json({ error: "Session expired. Sign in again." });
+  if (!session) {
+    deleteSession(tokenHash);
+    clearSessionCookie(res);
+    return res.status(401).json({ error: "Session expired. Sign in again." });
+  }
   if (session.status === "disabled") {
     deleteSession(tokenHash);
     clearSessionCookie(res);

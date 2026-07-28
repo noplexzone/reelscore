@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 
-let server, base, db, app, plexValidate;
+let server, base, db, app, plexValidate, finishFlow;
 const publicHeaders = { Host: "hosted.example.test", Origin: "https://hosted.example.test" };
 
 function rawRequest(pathname, { method = "GET", headers = {}, body = null } = {}) {
@@ -42,6 +42,7 @@ before(async () => {
   ({ createApp: app } = await import("../src/index.js"));
   ({ db } = await import("../src/db.js"));
   ({ plexValidate } = await import("../src/sync.js"));
+  ({ finishFlow } = await import("../src/provider-auth.js"));
   const expressApp = app();
   const trust = expressApp.get("trust proxy fn");
   assert.equal(trust("127.0.0.1"), false);
@@ -88,6 +89,27 @@ test("hosted sync rejects an unconfigured Plex origin before sending credentials
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("provider admission cannot create a user before first-admin bootstrap", async () => {
+  db.prepare(`INSERT INTO provider_flows (state_hash,provider,action,browser_hash,expires_at)
+    VALUES ('pre-bootstrap-flow','plex','login','browser',datetime('now','10 minutes'))`).run();
+  const flow = db.prepare("SELECT * FROM provider_flows WHERE state_hash='pre-bootstrap-flow'").get();
+  await assert.rejects(
+    finishFlow(
+      flow,
+      "plex",
+      { id: "attacker-subject", name: "attacker" },
+      { token: "credential-sentinel" },
+      { serverUrl: "https://plex.example.test:32400", machineId: "allowed-machine" },
+      { cookies: {}, headers: {}, ip: "127.0.0.1" },
+      {},
+      { allowedServer: true },
+    ),
+    /administrator onboarding/i,
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users").get().c, 0);
+  db.prepare("DELETE FROM provider_flows WHERE state_hash='pre-bootstrap-flow'").run();
 });
 
 test("first admin bootstrap is one-use and issues a secure __Host cookie", async () => {

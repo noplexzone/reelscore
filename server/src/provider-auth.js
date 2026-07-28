@@ -37,7 +37,7 @@ function browserHash(req, res, create = false) {
 function currentSession(req) {
   const raw = req.cookies?.[SESSION_COOKIE_NAME];
   if (!raw) return null;
-  return db.prepare(`SELECT s.token_hash,s.csrf_token,u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at > datetime('now') AND COALESCE(s.last_seen_at,s.created_at) > datetime('now','-7 days') AND u.status='active'`).get(sessionTokenHash(raw));
+  return db.prepare(`SELECT s.token_hash,s.csrf_token,u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at) > datetime('now') AND COALESCE(s.last_seen_at,s.created_at) > datetime('now','-7 days') AND u.status='active'`).get(sessionTokenHash(raw));
 }
 function requireStartCsrf(req, current) {
   if (!current || req.headers["x-csrf-token"] !== current.csrf_token) { const error = new Error("Sign in with a valid CSRF token before linking."); error.status = current ? 403 : 401; throw error; }
@@ -51,7 +51,7 @@ function newFlow(req, res, provider, action, inviteCode) {
   return { state };
 }
 function getFlow(req, state, provider) {
-  const flow = db.prepare(`SELECT * FROM provider_flows WHERE state_hash=? AND provider=? AND consumed_at IS NULL AND expires_at > datetime('now')`).get(sha256(String(state || "")), provider);
+  const flow = db.prepare(`SELECT * FROM provider_flows WHERE state_hash=? AND provider=? AND consumed_at IS NULL AND datetime(expires_at) > datetime('now')`).get(sha256(String(state || "")), provider);
   if (!flow || !browserHash(req, null, false) || flow.browser_hash !== browserHash(req, null, false)) { const error = new Error("Provider flow is invalid or expired."); error.status = 400; throw error; }
   if (flow.action === "link") {
     const current = currentSession(req);
@@ -67,12 +67,12 @@ function uniqueUsername(preferred) {
 }
 function connectionContext(userId, provider) { return { userId, connectionId: `${userId}:${provider}`, provider, field: "credentials" }; }
 
-async function finishFlow(flow, provider, identity, credentials, connection, req, res, admission = {}) {
+export async function finishFlow(flow, provider, identity, credentials, connection, req, res, admission = {}) {
   if (!identity?.id) { const error = new Error(`${provider} did not return an immutable identity.`); error.status = 502; throw error; }
   const passwordHash = await bcrypt.hash(randomHex(32), 10);
   let sessionResult = null;
   const result = db.transaction(() => {
-    const liveFlow = db.prepare("SELECT * FROM provider_flows WHERE state_hash=? AND consumed_at IS NULL AND expires_at > datetime('now')").get(flow.state_hash);
+    const liveFlow = db.prepare("SELECT * FROM provider_flows WHERE state_hash=? AND consumed_at IS NULL AND datetime(expires_at) > datetime('now')").get(flow.state_hash);
     if (!liveFlow || liveFlow.provider !== provider || liveFlow.action !== flow.action) { const error = new Error("Provider flow was already consumed."); error.status = 409; throw error; }
     const signedIn = flow.action === "link" ? currentSession(req) : null;
     if (flow.action === "link" && (!signedIn || signedIn.token_hash !== liveFlow.session_hash)) { const error = new Error("Provider link is not bound to this session."); error.status = 403; throw error; }
@@ -81,7 +81,12 @@ async function finishFlow(flow, provider, identity, credentials, connection, req
     if (signedIn && providerIdentity && providerIdentity.user_id !== signedIn.id) { const error = new Error("That provider account is already linked."); error.status = 409; throw error; }
     let invite = null;
     if (!userId) {
-      if (liveFlow.invite_hash) invite = db.prepare(`SELECT * FROM invites WHERE token_hash=? AND revoked=0 AND used_by IS NULL AND expires_at > datetime('now')`).get(liveFlow.invite_hash);
+      if (IS_HOSTED && db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND status='active'").get().c === 0) {
+        const error = new Error("Administrator onboarding must be completed before provider registration.");
+        error.status = 503;
+        throw error;
+      }
+      if (liveFlow.invite_hash) invite = db.prepare(`SELECT * FROM invites WHERE token_hash=? AND revoked=0 AND used_by IS NULL AND datetime(expires_at) > datetime('now')`).get(liveFlow.invite_hash);
       const plexAdmission = provider === "plex" && REGISTRATION_MODE === "plex_server" && admission.allowedServer === true;
       const registrationAllowed = REGISTRATION_MODE === "open" || plexAdmission || !!invite;
       if (REGISTRATION_MODE === "closed" || !registrationAllowed) { const error = new Error("A valid invitation is required for this provider sign-in."); error.status = 403; throw error; }

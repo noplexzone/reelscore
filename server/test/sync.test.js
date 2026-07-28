@@ -164,6 +164,31 @@ test("explicit preview/apply reconciles selected placeholder in place, preserves
   assert.deepEqual(Object.keys(JSON.parse(audit.detail)).sort(), ["actor_user_id", "provider_row_ids", "row_ids", "target_user_id", "timestamps"]);
 });
 
+test("reconciliation leaves an unselected same-second provider row byte-for-byte unchanged", async () => {
+  const uid = makeUser("reconcile_same_second");
+  const placeholderDate = "2026-07-27";
+  db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at) VALUES (?,777,'Film 777 A',49,'manual',?)`)
+    .run(uid, `${placeholderDate} 08:00:00`);
+  db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at) VALUES (?,777,'Film 777 B',49,'manual',?)`)
+    .run(uid, `${placeholderDate} 09:00:00`);
+  await importHistory(uid, "plex", [
+    event(777, "2020-01-01T00:00:00Z", "a"),
+    event(777, "2020-01-01T00:00:00Z", "b"),
+  ], getMovie, { connectionId: "machine:subject" });
+
+  const preview = previewPlaceholderReconciliation(uid, uid, placeholderDate);
+  assert.equal(preview.candidates.length, 2);
+  const selected = preview.candidates[0];
+  const unselectedProviderId = preview.candidates[1].provider_watch_id;
+  const unselectedBefore = db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedProviderId);
+  applyPlaceholderReconciliation(uid, uid, {
+    nonce: preview.nonce,
+    previewHash: preview.preview_hash,
+    candidateIds: [selected.candidate_id],
+  });
+  assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedProviderId), unselectedBefore);
+});
+
 
 test("stale reconciliation preview is rejected without partial mutation", async () => {
   const uid = makeUser("stale");
