@@ -18,8 +18,9 @@ This uses the normal `noplexzone/reelscore:develop` image and the existing `/dat
 ## Data behavior during first provider sync
 
 - Startup creates and integrity-checks a pre-migration database backup before schema changes.
-- A Plex event for a film manually logged today updates that existing row in place with the Plex watch date and provider identity.
-- Manual rows with no matching Plex history remain untouched. A manually logged unreleased or unavailable title is not removed merely because Plex does not return it.
+- Normal sync never moves or deletes an unmatched manual watch.
+- An explicit, admin-confirmed one-time onboarding reconciliation may preview and mark selected manually logged-today rows as replaceable, then update only those selected rows with Plex dates/provider identity.
+- Manual rows not selected or not matched remain byte-for-byte unchanged. A manually logged unreleased or unavailable title such as The Odyssey is not removed merely because Plex does not return it.
 - Stable provider event IDs make repeated/concurrent imports idempotent. Scoring is recomputed chronologically after watch dates change.
 
 ## Cloudflare

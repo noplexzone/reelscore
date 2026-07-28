@@ -15,23 +15,23 @@
 - Before schema migration on a non-empty `/data`, create and integrity-check a timestamped `/data/backups/` database backup. Preserve all users, hashes, watches, achievements, friendships, and settings.
 - If no admin exists, migrate only the oldest existing user to admin. Existing password logins continue. Hosted mode disables public password registration, not existing-user login.
 - `APP_MODE` defaults to `self_hosted`. Hosted mode fails closed without valid `PUBLIC_URL`, secure session/encryption secrets, explicit registration policy, and safe proxy configuration.
-- Hosted mode never fetches a user-supplied Plex URL. Plex connections come only from Plex PIN authentication and resource discovery; `PLEX_ALLOWED_SERVER_ID` can restrict admission/sync to Caleb's server.
-- Provider identities use immutable IDs. Provider tokens are AEAD-encrypted at rest with a dedicated key and never returned/logged.
-- Auth uses random opaque session cookies; only token hashes are stored. Cookies: HttpOnly, SameSite=Lax, Path=/, Secure in hosted mode. Mutations require CSRF. Logout, disable, and session revocation are immediate.
+- Hosted mode requires `PLEX_ALLOWED_SERVER_ID`. Filter resources by machine ID before considering URIs, verify `/identity` against it before storing and on sync, disable redirects, and enforce DNS/IP/port/timeout/response-size controls; discovery alone is not an SSRF boundary.
+- Provider identities are unique by immutable provider subject, never username/email. Provider tokens use a versioned AEAD envelope with key ID and AAD bound to user/connection/provider/field, support active plus decrypt-only previous keys, and never enter APIs/logs.
+- Hosted auth uses a `__Host-` Secure/HttpOnly/SameSite=Lax/Path=/ cookie with hashed 256-bit tokens, rotation, absolute+idle expiry, bounded active sessions, and no bearer fallback. Mutations require CSRF and exact Origin. Sensitive responses use `Cache-Control: no-store`.
 - OAuth/PIN state is random, expiring, one-time, browser-bound, and action-bound. Account merging requires an authenticated session.
 - Hosted registration supports `closed`, `invite` (default), and `plex_server`. Trakt-only first login requires an invite unless already linked.
-- Validate Host/Origin against `PUBLIC_URL`; exact configurable `TRUST_PROXY`; CSP/security headers; bounded bodies; provider timeouts; no unsafe redirects; rate limits. Never blindly trust forwarded headers.
+- Validate Host/Origin against `PUBLIC_URL`; hosted proxy trust is an explicit immediate-peer IP/CIDR predicate, never a boolean or hop count; CSP/security headers; bounded bodies; provider timeouts; no unsafe redirects; rate limits.
 - Admin controls: list/search users, role/status, provider/sync state without secrets, create/revoke invites, disable/reactivate users, revoke sessions. No destructive user deletion.
 - Plex sync uses individual playback-history events and stable provider event IDs with database uniqueness and transaction-safe idempotency.
-- Initial Plex sync may reuse an unmatched manual row for the same movie whose `watched_at` is today, replacing its placeholder date/source with the Plex event. Keep existing exact-same-day upgrade behavior.
-- Never delete unmatched manual watches. A manual item such as *The Odyssey* that is absent from Plex must remain unchanged.
+- Normal sync never moves or deletes an unmatched manual row. Exact-same-day verification may attach provider provenance without changing its timestamp.
+- Caleb's manually logged-today rows are corrected only through an explicit, admin-confirmed one-time reconciliation that previews exact matches and marks selected rows as onboarding placeholders. Only selected placeholders may have date/source replaced. Unmatched rows such as *The Odyssey* remain byte-for-byte unchanged.
 - Recompute watch `is_rewatch`/points chronologically after reconciliation using event timestamps, never `Date.now()`. Existing achievements remain.
 - Trakt refreshes expired tokens automatically.
 - No running-container restart/recreate, tunnel exposure, stable tag, or `latest`. Publish only `noplexzone/reelscore:develop` after review and verification.
 
 ## Task 1 — Safe migration and session auth
 
-Create versioned backup-first migrations and tables/columns for roles/status, sessions, provider identities, encrypted connections, OAuth flows, invites, audit log, schema versions, and provider-event watch identity. Replace browser JWT/localStorage auth with cookie sessions and CSRF.
+Create versioned backup-first migrations and tables/columns for roles/status, sessions, provider identities, encrypted connections, OAuth flows, invites, audit log, schema versions, and provider-event watch identity. Use SQLite's consistent backup API before mutation and fail on busy/corrupt/newer-schema states. Bootstrap admin only in the one-time migration. Replace browser JWT/localStorage auth with cookie sessions and CSRF.
 
 TDD: legacy-copy migration preserves rows and creates a valid backup; oldest-only admin bootstrap; password login cookie/CSRF; logout/expiry/disable/revoke; cookie attributes by mode; no localStorage token.
 
@@ -47,7 +47,7 @@ Commit: `feat(hosted): add admin controls and public security boundary`
 
 ## Task 3 — Plex/Trakt sign-in and linking
 
-Add Plex PIN/JWT initiation/polling, `/api/v2/user`, resource discovery/allowed machine validation, selected resource token storage, and provider login/link flows. Add Trakt authorization-code login/callback plus existing device-link support and token refresh. Encrypt all credentials. Hosted connections reject raw token/server URL.
+Add Plex PIN/JWT initiation/polling, `/api/v2/user`, resource discovery/allowed machine validation, selected resource token storage, and provider login/link flows. Flow state is one-use, expiring, browser/session/action-bound; provider ownership is transactionally unique. Add Trakt authorization-code login/callback plus existing device-link support and token refresh. Encrypt all credentials. Hosted connections reject raw token/server URL.
 
 TDD against local stubs: login/link, immutable identity, no unauthenticated merge, one-time flow, allowed server admission, arbitrary URL rejection, ciphertext at rest, Trakt refresh/retry.
 
@@ -55,7 +55,7 @@ Commit: `feat(auth): add secure Plex and Trakt sign-in`
 
 ## Task 4 — Full idempotent history reconciliation
 
-Use Plex playback-history pagination and resolve TMDB IDs. Refactor `importHistory` to stable event IDs, transactions/uniqueness, deterministic today-placeholder reuse, same-day upgrade, no unmatched-manual deletion, and chronological recalculation.
+Use Plex playback-history pagination and resolve TMDB IDs. Scope stable event uniqueness to immutable connection/server context, finish external resolution before short transactions, serialize sync per connection, preserve every playback event, add preview/confirm onboarding-placeholder reconciliation, and recalculate chronologically without changing unmatched manual rows.
 
 TDD: 1-day historical rewatch gets zero; >30 days gets 25%; future watches do not affect old events; concurrent/repeated imports dedupe; multiple Plex events remain multiple; today manual row receives real Plex date; same-day upgrade works; unmatched *The Odyssey* row is bit-for-bit unchanged; achievements remain.
 
