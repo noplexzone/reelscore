@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, totalScore, watchCount, currentStreak } from "../db.js";
-import { requireAuth } from "../auth.js";
+import { requireCsrf } from "../auth.js";
 import {
   searchMovies, movieDetails, collectionDetails, trendingMovies,
   personDetails, personMovieCredits,
@@ -12,7 +12,15 @@ import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
 
 export const api = Router();
-api.use(requireAuth);
+
+// Mutating requests require a valid CSRF token.
+api.use((req, res, next) => {
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+    return requireCsrf(req, res, next);
+  }
+  next();
+});
+
 api.use("/connections", connections);
 
 function userSummary(u) {
