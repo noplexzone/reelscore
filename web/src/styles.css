@@ -284,6 +284,11 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
 .auth-wrap .brand { font-size: 44px; text-align: center; }
 .auth-tagline { text-align: center; color: var(--dim); margin-top: -8px; }
 .error { color: var(--velvet); font-size: 14px; }
+.notice { color: var(--gold); font-size: 14px; }
+.auth-link { color: var(--gold); text-align: center; text-decoration: underline; text-underline-offset: 3px; }
+.auth-provider-note { text-align: center; line-height: 1.5; }
+.account-claim { width: min(520px, calc(100vw - 32px)); margin: 48px auto; }
+.account-claim .auth-link { display: inline-block; margin-top: 14px; }
 
 .form-row { display: flex; gap: 10px; }
 .list { display: grid; gap: 10px; }

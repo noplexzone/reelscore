@@ -333,12 +333,81 @@ function migration4() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (4)").run();
 }
 
+// Verified local identity, one-use account tokens, and encrypted email outbox.
+function migration5() {
+  if (!columnExists("users", "email")) db.exec(`ALTER TABLE users ADD COLUMN email TEXT`);
+  if (!columnExists("users", "email_normalized")) db.exec(`ALTER TABLE users ADD COLUMN email_normalized TEXT`);
+  if (!columnExists("users", "email_verified_at")) db.exec(`ALTER TABLE users ADD COLUMN email_verified_at INTEGER`);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_users_email_identity_insert
+    BEFORE INSERT ON users
+    WHEN (NEW.email IS NULL AND NEW.email_normalized IS NOT NULL)
+      OR (NEW.email IS NOT NULL AND NEW.email_normalized IS NULL)
+      OR (NEW.email IS NOT NULL AND NEW.email_normalized <> lower(trim(NEW.email)))
+    BEGIN
+      SELECT RAISE(ABORT, 'email normalization invariant failed');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_users_email_identity_update
+    BEFORE UPDATE OF email, email_normalized ON users
+    WHEN (NEW.email IS NULL AND NEW.email_normalized IS NOT NULL)
+      OR (NEW.email IS NOT NULL AND NEW.email_normalized IS NULL)
+      OR (NEW.email IS NOT NULL AND NEW.email_normalized <> lower(trim(NEW.email)))
+    BEGIN
+      SELECT RAISE(ABORT, 'email normalization invariant failed');
+    END;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+      ON users(email_normalized)
+      WHERE email_normalized IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS account_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      purpose TEXT NOT NULL CHECK(purpose IN ('verify_email','password_reset')),
+      token_digest TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_account_tokens_user_purpose
+      ON account_tokens(user_id, purpose, consumed_at, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_account_tokens_expiry
+      ON account_tokens(expires_at);
+
+    CREATE TABLE IF NOT EXISTS email_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      recipient TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload_encrypted TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL DEFAULT 'queued'
+        CHECK(state IN ('queued','sending','accepted','delivered','failed','dead')),
+      priority INTEGER NOT NULL DEFAULT 100,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      provider_message_id TEXT,
+      last_error_code TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      sent_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_jobs_due
+      ON email_jobs(state, priority, next_attempt_at, id);
+    CREATE INDEX IF NOT EXISTS idx_email_jobs_user
+      ON email_jobs(user_id, created_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (5)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
 export function runMigrations({ skipBackup = false } = {}) {
-  const latestVersion = 4;
+  const latestVersion = 5;
   const appliedBefore = tableExists("schema_versions")
     ? new Set(db.prepare("SELECT version FROM schema_versions").all().map((row) => row.version))
     : new Set();
@@ -346,7 +415,7 @@ export function runMigrations({ skipBackup = false } = {}) {
   if (highestVersion > latestVersion) {
     throw new Error(`[reelscore] Database schema version ${highestVersion} is newer than this build supports (${latestVersion}).`);
   }
-  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2) || !appliedBefore.has(3) || !appliedBefore.has(4);
+  const hasPendingMigration = [1, 2, 3, 4, 5].some((version) => !appliedBefore.has(version));
 
   // Back up any non-empty database before every pending schema migration,
   // including upgrades between versioned schemas.
@@ -386,6 +455,9 @@ export function runMigrations({ skipBackup = false } = {}) {
   }
   if (!applied.has(4)) {
     db.transaction(migration4)();
+  }
+  if (!applied.has(5)) {
+    db.transaction(migration5)();
   }
 
   if (process.env.APP_MODE === "hosted") {

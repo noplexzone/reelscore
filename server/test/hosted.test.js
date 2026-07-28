@@ -9,6 +9,8 @@ process.env.PLEX_ALLOWED_ORIGINS = "https://plex.example.test:32400";
 process.env.PLEX_CLIENT_IDENTIFIER = "reelscore-hosted-test";
 process.env.TRUSTED_PROXY_CIDRS = "172.29.0.2/32";
 process.env.BOOTSTRAP_ADMIN_TOKEN = "bootstrap-token-that-is-at-least-32-characters";
+process.env.EMAIL_PROVIDER = "capture";
+process.env.EMAIL_OUTBOX_ENCRYPTION_KEY = "hosted-test-email-outbox-key-at-least-32-characters";
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";

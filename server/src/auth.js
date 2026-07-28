@@ -3,7 +3,10 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { db } from "./db.js";
-import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED, REGISTRATION_MODE, SESSION_SECRET } from "./config.js";
+import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED, PUBLIC_URL, REGISTRATION_MODE, SESSION_SECRET } from "./config.js";
+import { consumeAccountToken, normalizeEmail } from "./account-tokens.js";
+import { issueAccountEmail } from "./account-email.js";
+import { normalizeEmailRecipient } from "./email.js";
 
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_ACTIVE_SESSIONS = 10;
@@ -80,6 +83,50 @@ const authLimiter = rateLimit({
   message: { error: "Too many attempts. Please try again later." },
 });
 
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many registration attempts. Please try again later." },
+});
+
+const accountEmailLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many email requests. Please try again later." },
+});
+
+const GENERIC_EMAIL_RESPONSE = {
+  ok: true,
+  message: "If the account is eligible, an email will arrive shortly.",
+};
+
+function validEmail(value) {
+  try {
+    normalizeEmailRecipient(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function queueAccountEmail({ userId, email, purpose, now = Date.now() }) {
+  return issueAccountEmail({
+    userId,
+    recipient: email,
+    purpose,
+    publicUrl: PUBLIC_URL,
+    now,
+  });
+}
+
+function pendingEmailResponse(res) {
+  return res.status(202).json(GENERIC_EMAIL_RESPONSE);
+}
+
 // ---------------------------------------------------------------------------
 // Auth router
 // ---------------------------------------------------------------------------
@@ -89,80 +136,171 @@ export const authRouter = Router();
 authRouter.get("/config", (_req, res) => {
   res.json({
     app_mode: IS_HOSTED ? "hosted" : "self_hosted",
-    registration_enabled: !IS_HOSTED && REGISTRATION_MODE !== "closed",
+    registration_enabled: REGISTRATION_MODE !== "closed" && (!IS_HOSTED || REGISTRATION_MODE === "open"),
     registration_mode: REGISTRATION_MODE,
     plex_enabled: true,
     trakt_enabled: !!(process.env.TRAKT_CLIENT_ID && process.env.TRAKT_CLIENT_SECRET),
   });
 });
 
-authRouter.post("/register", authLimiter, async (req, res) => {
-  if (IS_HOSTED || REGISTRATION_MODE === "closed") {
+authRouter.post("/register", registrationLimiter, async (req, res) => {
+  if (REGISTRATION_MODE === "closed" || (IS_HOSTED && REGISTRATION_MODE !== "open")) {
     return res.status(403).json({ error: "Public registration is disabled." });
   }
 
   const { username, password, invite_code } = req.body || {};
+  if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+    return res.status(400).json({ error: "Username must be 3-20 characters (letters, numbers, _)." });
+  }
+  const minimumPasswordLength = IS_HOSTED ? 12 : 8;
+  if (!password || password.length < minimumPasswordLength) {
+    return res.status(400).json({ error: `Password must be at least ${minimumPasswordLength} characters.` });
+  }
+
+  if (IS_HOSTED) {
+    if (db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin'").get().c === 0) {
+      return res.status(503).json({ error: "Registration is not available until administrator setup is complete." });
+    }
+    if (!validEmail(req.body?.email)) {
+      return res.status(400).json({ error: "Enter a valid email address." });
+    }
+    const email = String(req.body.email).trim();
+    const emailNormalized = normalizeEmail(email);
+    const hash = await bcrypt.hash(password, 10);
+    try {
+      db.transaction(() => {
+        const userId = Number(db.prepare(`
+          INSERT INTO users (username, password_hash, email, email_normalized)
+          VALUES (?, ?, ?, ?)
+        `).run(username, hash, email, emailNormalized).lastInsertRowid);
+        queueAccountEmail({ userId, email, purpose: "verify_email" });
+      })();
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (/users\.username|UNIQUE constraint failed: users\.username/i.test(message)) {
+        return res.status(409).json({ error: "That username is taken." });
+      }
+      if (/email_normalized|idx_users_email_normalized/i.test(message)) {
+        return pendingEmailResponse(res);
+      }
+      return res.status(500).json({ error: "Registration could not be completed." });
+    }
+    return pendingEmailResponse(res);
+  }
 
   if (REGISTRATION_MODE === "invite") {
-    // Self-hosted invite mode (not the default, but configurable).
-    if (!invite_code) {
-      return res.status(403).json({ error: "An invite code is required to register." });
-    }
-    const codeHash = sha256(String(invite_code));
-    const invite = db
-      .prepare(
-        `SELECT * FROM invites WHERE token_hash = ? AND revoked = 0
-         AND used_by IS NULL AND julianday(expires_at) > julianday('now')`
-      )
-      .get(codeHash);
-    if (!invite) {
-      return res.status(403).json({ error: "Invalid or expired invite code." });
-    }
-  }
-
-  if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-    return res
-      .status(400)
-      .json({ error: "Username must be 3-20 characters (letters, numbers, _)." });
-  }
-  if (!password || password.length < 8) {
-    return res.status(400).json({ error: "Password must be at least 8 characters." });
+    if (!invite_code) return res.status(403).json({ error: "An invite code is required to register." });
+    const invite = db.prepare(`SELECT * FROM invites WHERE token_hash=? AND revoked=0
+      AND used_by IS NULL AND julianday(expires_at)>julianday('now')`).get(sha256(String(invite_code)));
+    if (!invite) return res.status(403).json({ error: "Invalid or expired invite code." });
   }
 
   const exists = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
   if (exists) return res.status(409).json({ error: "That username is taken." });
-
   const hash = await bcrypt.hash(password, 10);
-  const info = db
-    .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
-    .run(username, hash);
+  const info = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)").run(username, hash);
   const userId = info.lastInsertRowid;
-
-  // If no admin exists yet, make this user the first admin (fresh-install bootstrap).
-  const adminCount = db
-    .prepare("SELECT COUNT(*) c FROM users WHERE role = 'admin'")
-    .get().c;
-  if (adminCount === 0) {
-    db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(userId);
+  const adminCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'admin'").get().c;
+  if (adminCount === 0) db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(userId);
+  if (REGISTRATION_MODE === "invite" && invite_code) {
+    db.prepare("UPDATE invites SET used_by=?, used_at=datetime('now') WHERE token_hash=?")
+      .run(userId, sha256(String(invite_code)));
   }
-
-  // Mark invite as used.
-  if (REGISTRATION_MODE === "invite" && req.body?.invite_code) {
-    const codeHash = sha256(String(req.body.invite_code));
-    db.prepare(
-      "UPDATE invites SET used_by = ?, used_at = datetime('now') WHERE token_hash = ?"
-    ).run(userId, codeHash);
-  }
-
-  const { token, csrfToken } = createSession(userId, {
-    ip: req.ip,
-    userAgent: req.headers["user-agent"] || null,
-  });
+  const { token, csrfToken } = createSession(userId, { ip: req.ip, userAgent: req.headers["user-agent"] || null });
   setSessionCookie(res, token);
-  res.json({
-    csrf_token: csrfToken,
-    user: { id: userId, username, role: "user" },
+  return res.json({ csrf_token: csrfToken, user: { id: userId, username, role: "user" } });
+});
+
+authRouter.post("/email/verify", accountEmailLimiter, (req, res) => {
+  const token = String(req.body?.token || "");
+  const now = Date.now();
+  const consumed = consumeAccountToken({
+    token,
+    purpose: "verify_email",
+    now,
+    onConsume: ({ userId }) => {
+      db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(now, userId);
+    },
   });
+  if (!consumed) return res.status(400).json({ error: "Verification link is invalid or expired." });
+  return res.json({ ok: true });
+});
+
+authRouter.post("/verification/resend", accountEmailLimiter, (req, res) => {
+  const emailNormalized = normalizeEmail(req.body?.email);
+  if (validEmail(emailNormalized)) {
+    const user = db.prepare(`
+      SELECT id, email FROM users
+      WHERE email_normalized=? AND email_verified_at IS NULL AND status='active'
+    `).get(emailNormalized);
+    if (user) {
+      try {
+        db.transaction(() => queueAccountEmail({ userId: user.id, email: user.email, purpose: "verify_email" }))();
+      } catch {
+        // Preserve an enumeration-resistant response. Operators inspect outbox health separately.
+      }
+    }
+  }
+  return pendingEmailResponse(res);
+});
+
+authRouter.post("/password-reset/request", accountEmailLimiter, (req, res) => {
+  const emailNormalized = normalizeEmail(req.body?.email);
+  if (validEmail(emailNormalized)) {
+    const user = db.prepare(`
+      SELECT id, email FROM users
+      WHERE email_normalized=? AND email_verified_at IS NOT NULL AND status='active'
+    `).get(emailNormalized);
+    if (user) {
+      try {
+        db.transaction(() => queueAccountEmail({ userId: user.id, email: user.email, purpose: "password_reset" }))();
+      } catch {
+        // Preserve an enumeration-resistant response. Operators inspect outbox health separately.
+      }
+    }
+  }
+  return pendingEmailResponse(res);
+});
+
+authRouter.post("/password-reset/complete", authLimiter, async (req, res) => {
+  const token = String(req.body?.token || "");
+  const password = String(req.body?.password || "");
+  if (password.length < 12) return res.status(400).json({ error: "Password must be at least 12 characters." });
+  const passwordHash = await bcrypt.hash(password, 10);
+  const now = Date.now();
+  const consumed = consumeAccountToken({
+    token,
+    purpose: "password_reset",
+    now,
+    onConsume: ({ userId }) => {
+      db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(passwordHash, userId);
+      db.prepare("DELETE FROM sessions WHERE user_id=?").run(userId);
+    },
+  });
+  if (!consumed) return res.status(400).json({ error: "Password reset link is invalid or expired." });
+  return res.json({ ok: true });
+});
+
+authRouter.post("/email/claim", requireAuth, requireCsrf, accountEmailLimiter, (req, res) => {
+  if (!IS_HOSTED) return res.sendStatus(404);
+  if (!validEmail(req.body?.email)) return res.status(400).json({ error: "Enter a valid email address." });
+  const email = String(req.body.email).trim();
+  const emailNormalized = normalizeEmail(email);
+  const current = db.prepare("SELECT email_verified_at FROM users WHERE id=?").get(req.user.id);
+  if (current?.email_verified_at) return res.status(409).json({ error: "This account already has a verified email." });
+  try {
+    db.transaction(() => {
+      db.prepare("UPDATE users SET email=?,email_normalized=?,email_verified_at=NULL WHERE id=?")
+        .run(email, emailNormalized, req.user.id);
+      queueAccountEmail({ userId: req.user.id, email, purpose: "verify_email" });
+    })();
+  } catch (error) {
+    if (/email_normalized|idx_users_email_normalized/i.test(String(error?.message || ""))) {
+      return res.status(409).json({ error: "That email address is unavailable." });
+    }
+    return res.status(500).json({ error: "Email claim could not be completed." });
+  }
+  return pendingEmailResponse(res);
 });
 
 authRouter.post("/bootstrap", authLimiter, async (req, res) => {
@@ -205,6 +343,9 @@ authRouter.post("/login", authLimiter, async (req, res) => {
   if (user.status === "disabled") {
     return res.status(403).json({ error: "This account is disabled." });
   }
+  if (IS_HOSTED && user.email_normalized && !user.email_verified_at) {
+    return res.status(403).json({ error: "Verify your email before signing in." });
+  }
 
   const { token, csrfToken } = createSession(user.id, {
     ip: req.ip,
@@ -213,7 +354,13 @@ authRouter.post("/login", authLimiter, async (req, res) => {
   setSessionCookie(res, token);
   res.json({
     csrf_token: csrfToken,
-    user: { id: user.id, username: user.username, role: user.role },
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      email: user.email || null,
+      email_verified: !!user.email_verified_at,
+    },
   });
 });
 
@@ -230,7 +377,13 @@ authRouter.post("/logout", requireAuth, requireCsrf, (req, res) => {
 authRouter.get("/me", requireAuth, (req, res) => {
   res.json({
     csrf_token: req.sessionData.csrfToken,
-    user: { id: req.user.id, username: req.user.username, role: req.user.role },
+    user: {
+      id: req.user.id,
+      username: req.user.username,
+      role: req.user.role,
+      email: req.user.email,
+      email_verified: req.user.emailVerified,
+    },
   });
 });
 
@@ -246,7 +399,7 @@ export function requireAuth(req, res, next) {
   const session = db
     .prepare(
       `SELECT s.token_hash, s.csrf_token, s.expires_at, s.last_seen_at,
-              u.id, u.username, u.role, u.status
+              u.id, u.username, u.role, u.status, u.email, u.email_verified_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ? AND julianday(s.expires_at) > julianday('now')
@@ -271,11 +424,21 @@ export function requireAuth(req, res, next) {
     username: session.username,
     role: session.role,
     status: session.status,
+    email: session.email || null,
+    emailVerified: !!session.email_verified_at,
   };
   req.sessionData = {
     tokenHash: session.token_hash,
     csrfToken: session.csrf_token,
   };
+  next();
+}
+
+export function requireVerifiedEmail(req, res, next) {
+  if (!IS_HOSTED) return next();
+  if (!req.user?.emailVerified) {
+    return res.status(403).json({ error: "Verify an email address before connecting providers or importing history." });
+  }
   next();
 }
 

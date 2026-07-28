@@ -85,30 +85,27 @@ test("self_hosted: invalid username rejected", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Hosted mode: /register is closed + Host/Origin validation
+// Hosted mode: open registration config + Host/Origin validation
 // ---------------------------------------------------------------------------
 
-test("hosted: /register returns 403 (closed)", async () => {
-  // Build a hosted mode app directly without requiring a separate process.
-  // We test the register handler logic by checking the route response.
-  // Since APP_MODE is module-level, we test via the validateConfig + route logic.
+test("hosted: open registration requires configured email delivery", async () => {
   const { validateConfig } = await import("../src/config.js");
-
-  // Verify that hosted mode returns IS_HOSTED=true.
   const cfg = validateConfig({
     APP_MODE: "hosted",
+    NODE_ENV: "test",
     SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
     CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
+    EMAIL_OUTBOX_ENCRYPTION_KEY: "independent-email-outbox-key-that-is-at-least-32-chars",
     PLEX_ALLOWED_SERVER_ID: "allowed-machine",
     PLEX_ALLOWED_ORIGINS: "https://plex.example.com:32400",
     PLEX_CLIENT_IDENTIFIER: "reelscore-test",
     TRUSTED_PROXY_CIDRS: "172.29.0.2/32",
     PUBLIC_URL: "https://test.example.com",
+    EMAIL_PROVIDER: "capture",
   });
   assert.equal(cfg.IS_HOSTED, true);
-  assert.equal(cfg.REGISTRATION_MODE, "invite");
-  // In hosted mode the register route returns 403 — confirmed by auth.js logic.
-  // (Full hosted-mode integration tests run separately via the env-preset pattern.)
+  assert.equal(cfg.REGISTRATION_MODE, "open");
+  assert.equal(cfg.EMAIL_PROVIDER, "capture");
 });
 
 // ---------------------------------------------------------------------------

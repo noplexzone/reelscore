@@ -227,6 +227,18 @@ test("migration: sessions gain idle tracking and bootstrap state is durable", ()
   assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=4").get());
 });
 
+test("migration: verified-account foundation preserves legacy null-email users and data", () => {
+  const columns = new Set(db.prepare("PRAGMA table_info(users)").all().map((row) => row.name));
+  assert.ok(columns.has("email"));
+  assert.ok(columns.has("email_normalized"));
+  assert.ok(columns.has("email_verified_at"));
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email IS NULL AND email_normalized IS NULL").get().c, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 4);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_tokens'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='email_jobs'").get());
+  assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=5").get());
+});
+
 test("backup includes committed WAL rows when a reader prevents checkpointing", async () => {
   const reader = new Database(DB_PATH);
   reader.pragma("journal_mode = WAL");

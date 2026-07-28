@@ -67,11 +67,15 @@ const hosted = (overrides = {}) => ({
   APP_MODE: "hosted",
   SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
   CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
+  EMAIL_OUTBOX_ENCRYPTION_KEY: "independent-email-outbox-key-that-is-at-least-32-chars",
+  EMAIL_OUTBOX_ENCRYPTION_KEY_ID: "email-active",
   PLEX_ALLOWED_SERVER_ID: "allowed-machine",
   PLEX_ALLOWED_ORIGINS: "https://plex.example.com:32400",
   PLEX_CLIENT_IDENTIFIER: "reelscore-test",
   TRUSTED_PROXY_CIDRS: "172.29.0.2/32",
   PUBLIC_URL: "https://example.com",
+  NODE_ENV: "test",
+  EMAIL_PROVIDER: "capture",
   ...overrides,
 });
 
@@ -156,6 +160,15 @@ test("hosted: credential key must differ from session secret", () => {
   );
 });
 
+test("hosted: email outbox key is required and independent", () => {
+  assert.throws(() => validateConfig(hosted({ EMAIL_OUTBOX_ENCRYPTION_KEY: undefined })), /EMAIL_OUTBOX_ENCRYPTION_KEY/);
+  const same = "same-secret-that-is-at-least-thirty-two-characters";
+  assert.throws(() => validateConfig(hosted({
+    CREDENTIAL_ENCRYPTION_KEY: same,
+    EMAIL_OUTBOX_ENCRYPTION_KEY: same,
+  })), /email outbox.*different/i);
+});
+
 test("hosted: valid config succeeds", () => {
   const cfg = validateConfig(hosted({
     PUBLIC_URL: "https://app.example.com",
@@ -168,9 +181,18 @@ test("hosted: valid config succeeds", () => {
   assert.equal(cfg.PUBLIC_URL, "https://app.example.com");
 });
 
-test("hosted: REGISTRATION_MODE defaults to invite", () => {
+test("hosted: REGISTRATION_MODE defaults to open with configured email delivery", () => {
   const cfg = validateConfig(hosted());
-  assert.equal(cfg.REGISTRATION_MODE, "invite");
+  assert.equal(cfg.REGISTRATION_MODE, "open");
+  assert.equal(cfg.EMAIL_PROVIDER, "capture");
+});
+
+test("hosted: open registration fails closed without email delivery", () => {
+  assert.throws(() => validateConfig(hosted({ EMAIL_PROVIDER: undefined })), /EMAIL_PROVIDER/);
+});
+
+test("hosted: capture email delivery is forbidden outside tests", () => {
+  assert.throws(() => validateConfig(hosted({ NODE_ENV: "production" })), /capture email delivery is test-only/i);
 });
 
 test("hosted: REGISTRATION_MODE=closed is valid", () => {
