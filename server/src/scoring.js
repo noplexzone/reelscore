@@ -26,7 +26,9 @@ export function watchPoints({ voteAverage, runtime, priorWatches, watchedAt = ne
   const current = timestamp(watchedAt);
   const earlier = (priorWatches || [])
     .map((value) => ({ value, time: timestamp(value) }))
-    .filter(({ time }) => Number.isFinite(time) && time < current)
+    // The caller supplies prior events in deterministic order. Equal-time
+    // entries already visited are therefore prior watches by row/event tie-break.
+    .filter(({ time }) => Number.isFinite(time) && time <= current)
     .sort((a, b) => b.time - a.time);
   if (earlier.length === 0) {
     return { points: base, isRewatch: false, reason: "first_watch" };

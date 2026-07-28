@@ -8,21 +8,24 @@ const normalizeWatchedAt = (value) => new Date(String(value).replace(" ", "T") +
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
 const stableJson = (value) => JSON.stringify(value);
 
-export function recomputeUserWatchScores(userId, tmdbIds = null) {
+export function recomputeUserWatchScores(userId, tmdbIds = null, { preserveManual = false, preserveIds = [] } = {}) {
   const affected = tmdbIds == null
     ? null
     : [...new Set((Array.isArray(tmdbIds) ? tmdbIds : [tmdbIds]).map(Number))]
         .filter((id) => Number.isInteger(id) && id > 0);
   if (affected && affected.length === 0) return;
   const scope = affected ? ` AND tmdb_id IN (${affected.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`SELECT id,tmdb_id,vote_average,runtime,watched_at
+  const rows = db.prepare(`SELECT id,tmdb_id,vote_average,runtime,watched_at,source
     FROM watches WHERE user_id=?${scope} ORDER BY watched_at ASC,id ASC`).all(userId, ...(affected || []));
   const priorByMovie = new Map();
+  const preserved = new Set(preserveIds.map(Number));
   const update = db.prepare("UPDATE watches SET points=?,is_rewatch=? WHERE id=?");
   for (const row of rows) {
     const prior = priorByMovie.get(row.tmdb_id) || [];
     const score = watchPoints({ voteAverage: row.vote_average, runtime: row.runtime, priorWatches: prior, watchedAt: row.watched_at });
-    update.run(score.points, score.isRewatch ? 1 : 0, row.id);
+    if (!(preserveManual && row.source === "manual") && !preserved.has(row.id)) {
+      update.run(score.points, score.isRewatch ? 1 : 0, row.id);
+    }
     prior.push(row.watched_at);
     priorByMovie.set(row.tmdb_id, prior);
   }
@@ -34,6 +37,7 @@ function namespacedEventId(service, connectionId, eventId) {
 
 export async function importHistory(userId, service, items, getMovie, { connectionId = `legacy:${service}` } = {}) {
   const result = { imported: 0, verified: 0, skipped: 0, failed: 0, movies: [] };
+  const upgradedIds = [];
   const normalized = [];
   for (const item of items || []) {
     if (!item.tmdb_id || !item.watched_at || item.event_id == null) { result.failed++; continue; }
@@ -63,6 +67,24 @@ export async function importHistory(userId, service, items, getMovie, { connecti
     for (const item of normalized) {
       const movie = movieById.get(item.tmdb_id);
       if (!movie) { result.failed++; continue; }
+      const legacy = db.prepare(`SELECT id FROM watches
+        WHERE user_id=? AND source=? AND tmdb_id=? AND watched_at=? AND provider_event_id IS NULL
+        ORDER BY id`).all(userId, service, item.tmdb_id, item.watched_at);
+      if (legacy.length === 1) {
+        const upgraded = db.prepare(`UPDATE watches
+          SET provider_service=?,provider_connection_id=?,provider_event_id=?
+          WHERE id=? AND provider_event_id IS NULL`).run(
+            service, connectionId, item.provider_event_id, legacy[0].id,
+          );
+        if (upgraded.changes) {
+          result.verified++;
+          upgradedIds.push(legacy[0].id);
+          continue;
+        }
+      } else if (legacy.length > 1) {
+        result.failed++;
+        continue;
+      }
       const info = insert.run(
         userId, movie.id, movie.title, movie.poster_path, movie.vote_average, movie.runtime, movie.release_date,
         JSON.stringify((movie.genres || []).map((genre) => genre.name)), movie.belongs_to_collection?.id || null,
@@ -73,7 +95,9 @@ export async function importHistory(userId, service, items, getMovie, { connecti
         if (!result.movies.includes(item.tmdb_id)) result.movies.push(item.tmdb_id);
       } else result.skipped++;
     }
-    if (result.imported) recomputeUserWatchScores(userId, result.movies);
+    if (result.imported) {
+      recomputeUserWatchScores(userId, result.movies, { preserveManual: true, preserveIds: upgradedIds });
+    }
   })();
   return result;
 }
@@ -97,18 +121,27 @@ export async function traktProfile(token) { return providerJson(TRAKT_BASE + "/u
 export async function traktUsername(token) { return (await traktProfile(token))?.user?.username || null; }
 export async function traktHistory(token) {
   const items = [];
-  for (let page = 1; page <= 50; page++) {
+  const maxPages = 1000;
+  for (let page = 1; page <= maxPages; page++) {
     const response = await safeProviderFetch(`${TRAKT_BASE}/sync/history/movies?page=${page}&limit=100`, { headers: traktHeaders(token) }, policy(new URL(TRAKT_BASE).origin));
     if (!response.ok) { const error = new Error(`Trakt error ${response.status}`); error.status = response.status === 401 ? 401 : 502; throw error; }
     const batch = await response.json();
     if (!Array.isArray(batch)) throw new Error("Trakt returned invalid history.");
     for (const history of batch) {
       const tmdbId = history.movie?.ids?.tmdb;
-      if (tmdbId && history.watched_at && history.id != null) items.push({ tmdb_id: tmdbId, watched_at: history.watched_at, event_id: String(history.id) });
+      if (!tmdbId || !history.watched_at || history.id == null) {
+        throw new Error("Trakt returned a history event without stable identity or TMDB metadata.");
+      }
+      items.push({ tmdb_id: tmdbId, watched_at: history.watched_at, event_id: String(history.id) });
     }
-    if (batch.length < 100) break;
+    const declaredPages = Number(response.headers?.["x-pagination-page-count"] || 0);
+    if (declaredPages > maxPages) {
+      throw new Error("Trakt history exceeds the safe pagination limit; sync was not marked complete.");
+    }
+    if ((declaredPages && page >= declaredPages) || (!declaredPages && batch.length < 100)) return items;
+    if (page === maxPages) throw new Error("Trakt history exceeds the safe pagination limit; sync was not marked complete.");
   }
-  return items;
+  throw new Error("Trakt history pagination did not complete.");
 }
 export const traktRefresh = (refreshToken) => traktPost("/oauth/token", { refresh_token: refreshToken, client_id: TRAKT_CLIENT_ID, client_secret: TRAKT_CLIENT_SECRET, grant_type: "refresh_token" });
 export async function traktHistoryWithRefresh(credentials, expiresAt) {
@@ -159,7 +192,8 @@ export async function plexWatchedMovies(
   const metadataCache = new Map();
   const observedAccountIds = new Set();
   let metadataLookups = 0;
-  for (let start = 0, pageNumber = 0; pageNumber < 50; start += 200, pageNumber++) {
+  const maxPages = 1000;
+  for (let start = 0, pageNumber = 0; pageNumber < maxPages; start += 200, pageNumber++) {
     const query = new URLSearchParams({
       type: "1",
       sort: "viewedAt:asc",
@@ -169,10 +203,15 @@ export async function plexWatchedMovies(
     });
     if (accountId != null) query.set("accountID", String(accountId));
     const page = await plexGet(serverUrl, token, `/status/sessions/history/all?${query}`);
-    const history = page?.MediaContainer?.Metadata || [];
+    const container = page?.MediaContainer || {};
+    const history = container.Metadata || [];
     if (!Array.isArray(history)) throw new Error("Plex returned invalid playback history.");
+    const totalSize = Number(container.totalSize ?? container.total_size ?? 0);
+    if (totalSize > maxPages * 200) {
+      throw new Error("Plex history exceeds the safe pagination limit; sync was not marked complete.");
+    }
     for (const event of history) {
-      if (!event.viewedAt || !event.ratingKey) continue;
+      if (!event.viewedAt || !event.ratingKey) throw new Error("Plex returned an incomplete history event.");
       const eventAccountId = event.accountID ?? event.accountId;
       if (eventAccountId == null) {
         throw new Error("Plex history did not identify the viewing account.");
@@ -199,18 +238,31 @@ export async function plexWatchedMovies(
           metadataCache.set(ratingKey, tmdbId || null);
         }
       }
-      if (!tmdbId) continue;
-      const eventKey = event.historyKey || event.history_key || event.id ||
-        `${ratingKey}:${event.viewedAt}:${eventAccountId}:${event.deviceID || ""}`;
+      if (!tmdbId) {
+        if (metadataLookups >= 500 && !metadataCache.has(ratingKey)) {
+          throw new Error("Plex metadata resolution exceeded the safe limit; sync was not marked complete.");
+        }
+        throw new Error(`Plex history item ${ratingKey} has no TMDB identity; sync was not marked complete.`);
+      }
+      const eventKey = event.historyKey || event.history_key || event.id;
+      if (eventKey == null || eventKey === "") {
+        throw new Error("Plex returned a history event without an immutable history ID.");
+      }
       items.push({
         tmdb_id: tmdbId,
         watched_at: new Date(Number(event.viewedAt) * 1000).toISOString(),
         event_id: String(eventKey),
       });
     }
-    if (history.length < 200) break;
+    if ((totalSize && start + history.length >= totalSize) || (!totalSize && history.length < 200)) {
+      items.accountId = observedAccountIds.size === 1 ? [...observedAccountIds][0] : null;
+      return items;
+    }
+    if (pageNumber === maxPages - 1) {
+      throw new Error("Plex history pagination did not complete within the safe limit.");
+    }
   }
-  return items;
+  throw new Error("Plex history pagination did not complete.");
 }
 
 function currentCandidates(targetUserId, placeholderDate) {
@@ -287,7 +339,7 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
       if (removeProvider.run(candidate.provider_watch_id, targetUserId, candidate.provider_event_id).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
       if (updateManual.run(candidate.provider_watched_at, candidate.source, candidate.provider_service, candidate.provider_connection_id, candidate.provider_event_id, candidate.manual_watch_id, targetUserId, candidate.manual_watched_at).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
     }
-    recomputeUserWatchScores(targetUserId, selected.map((candidate) => candidate.tmdb_id));
+    recomputeUserWatchScores(targetUserId, selected.map((candidate) => candidate.tmdb_id), { preserveManual: true });
     const detail = stableJson({
       actor_user_id: actorUserId,
       target_user_id: targetUserId,

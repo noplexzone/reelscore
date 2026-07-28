@@ -8,6 +8,8 @@ import { createServer } from "node:http";
 
 let stubServer, origin, providers, db, createApp, startTestServer, parseCookies, sync;
 let traktHistoryPayload = [];
+let traktPageCount = null;
+let plexTotalSize = null;
 let plexHistoryPayload = [
   { historyKey: "/status/sessions/history/9001", ratingKey: "501", viewedAt: 1577836800, accountID: 42, Guid: [{ id: "tmdb://501" }] },
   { historyKey: "/status/sessions/history/9002", ratingKey: "502", viewedAt: 1577836860, accountID: 42 },
@@ -27,8 +29,12 @@ before(async () => {
     if (req.url.startsWith("/api/v2/resources")) return json(res, 200, [{ provides: "server", owned: true, clientIdentifier: "allowed-machine", name: "Allowed Plex", accessToken: "PLEX_SERVER_SECRET", connections: [{ uri: `${origin}/web` }, { uri: "http://169.254.169.254/latest/meta-data" }] }]);
     if (req.url === "/identity") return json(res, 200, { MediaContainer: { machineIdentifier: "allowed-machine", friendlyName: "Verified Plex" } });
     if (req.url === "/oauth/token") return json(res, 200, { access_token: "NEW_TRAKT_SECRET", refresh_token: "NEW_REFRESH", created_at: Math.floor(Date.now() / 1000), expires_in: 3600 });
-    if (req.url.startsWith("/sync/history/movies")) return req.headers.authorization === "Bearer OLD_TRAKT_SECRET" ? json(res, 401, {}) : json(res, 200, traktHistoryPayload);
-    if (req.url.startsWith("/status/sessions/history/all")) return json(res, 200, { MediaContainer: { Metadata: plexHistoryPayload } });
+    if (req.url.startsWith("/sync/history/movies")) return req.headers.authorization === "Bearer OLD_TRAKT_SECRET"
+      ? json(res, 401, {})
+      : json(res, 200, traktHistoryPayload, traktPageCount ? { "x-pagination-page-count": String(traktPageCount) } : {});
+    if (req.url.startsWith("/status/sessions/history/all")) return json(res, 200, {
+      MediaContainer: { Metadata: plexHistoryPayload, ...(plexTotalSize == null ? {} : { totalSize: plexTotalSize }) },
+    });
     if (req.url === "/library/metadata/502?includeGuids=1") return json(res, 200, { MediaContainer: { Metadata: [{ ratingKey: "502", Guid: [{ id: "com.plexapp.agents.themoviedb://502?lang=en" }] }] } });
     if (req.url === "/users/settings") return json(res, 200, { user: { username: "same_name", ids: { trakt: 444, slug: "mutable-slug" } } });
     json(res, 404, {});
@@ -172,6 +178,34 @@ test("Plex history is account-scoped and rejects an ambiguous shared-user respon
     assert.ok(requests.some((request) => request.url.includes("accountID=1")));
   } finally {
     plexHistoryPayload = normal;
+  }
+});
+
+test("history clients fail closed on incomplete pagination, unresolved metadata, and missing immutable IDs", async () => {
+  const oldTrakt = traktHistoryPayload;
+  const oldPlex = plexHistoryPayload;
+  try {
+    traktHistoryPayload = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1, watched_at: "2020-01-01T00:00:00Z", movie: { ids: { tmdb: index + 1 } },
+    }));
+    traktPageCount = 1001;
+    await assert.rejects(() => sync.traktHistory("NEW_TRAKT_SECRET"), /safe pagination limit/i);
+
+    plexHistoryPayload = oldPlex;
+    plexTotalSize = 200001;
+    await assert.rejects(() => sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine"), /safe pagination limit/i);
+
+    plexTotalSize = null;
+    plexHistoryPayload = [{ ratingKey: "501", viewedAt: 1577836800, accountID: 42, Guid: [{ id: "tmdb://501" }] }];
+    await assert.rejects(() => sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine"), /immutable history ID/i);
+
+    plexHistoryPayload = [{ historyKey: "missing-tmdb", ratingKey: "999", viewedAt: 1577836800, accountID: 42 }];
+    await assert.rejects(() => sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine"), /no TMDB identity|Plex error 404/i);
+  } finally {
+    traktHistoryPayload = oldTrakt;
+    traktPageCount = null;
+    plexHistoryPayload = oldPlex;
+    plexTotalSize = null;
   }
 });
 

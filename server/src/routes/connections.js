@@ -102,12 +102,28 @@ connections.post("/:service/sync", async (req, res, next) => {
       } else {
         if (IS_HOSTED && !conn.server_machine_id) { const error = new Error("Hosted Plex connection has no verified machine identity."); error.status = 403; throw error; }
         const plexCredentials = credentials(conn);
-        const configuredAccountId = Number(process.env.PLEX_HISTORY_ACCOUNT_ID || 0) || null;
+        const legacyAccountId = !conn.provider_identity_id
+          ? (Number(process.env.PLEX_HISTORY_ACCOUNT_ID || 0) || null)
+          : null;
+        const accountId = plexCredentials.isOwner
+          ? 1
+          : (plexCredentials.historyAccountId || legacyAccountId);
         items = await plexWatchedMovies(conn.server_url, plexCredentials.token, conn.server_machine_id || null, {
-          accountId: plexCredentials.isOwner ? 1 : configuredAccountId,
+          accountId,
         });
+        if (conn.provider_identity_id && !plexCredentials.isOwner && !plexCredentials.historyAccountId && items.length) {
+          if (!items.accountId) throw new Error("Plex could not determine a unique local account for this shared user; re-link Plex.");
+          const updated = { ...plexCredentials, historyAccountId: items.accountId };
+          db.prepare("UPDATE connections SET credentials_encrypted=? WHERE user_id=? AND service='plex'")
+            .run(encryptJson(updated, context(req.user.id, "plex")), req.user.id);
+        }
       }
       const result = await importHistory(req.user.id, service, items, movieDetails, { connectionId: eventConnectionId(conn) });
+      if (result.failed) {
+        const error = new Error(`${service} history was incomplete; imported events remain idempotent, but sync was not marked complete.`);
+        error.status = 502;
+        throw error;
+      }
       const newAchievements = [], seenKeys = new Set(), collectionIds = new Set(), personIds = new Set();
       const collect = (list) => { for (const achievement of list || []) if (!seenKeys.has(achievement.key)) { seenKeys.add(achievement.key); newAchievements.push(achievement); } };
       for (const tmdbId of result.movies) { try { const movie = await movieDetails(tmdbId); if (movie.belongs_to_collection?.id) collectionIds.add(movie.belongs_to_collection.id); for (const person of notablePeopleInMovie(movie.credits)) personIds.add(person.id); } catch {} }

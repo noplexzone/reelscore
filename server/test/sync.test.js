@@ -81,13 +81,49 @@ test("normal sync is additive and never implicitly converts a same-day manual ro
   const unrelatedBefore = db.prepare("SELECT * FROM watches WHERE id=?").get(unrelatedId);
   await importHistory(uid, "plex", [event(401, "2022-03-03T22:00:00Z", "plex-play")], getMovie, { connectionId: "machine:account" });
   const after = db.prepare("SELECT * FROM watches WHERE id=?").get(manualId);
-  assert.deepEqual(
-    { ...after, points: before.points, is_rewatch: before.is_rewatch },
-    before,
-    "sync may recompute derived score fields but must not move, delete, or convert the manual watch",
-  );
+  assert.deepEqual(after, before, "normal sync must not mutate any manual-watch field");
   assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unrelatedId), unrelatedBefore);
   assert.equal(watchesOf(uid).length, 3);
+});
+
+
+test("legacy provider rows gain unambiguous provenance without changing content", async () => {
+  const uid = makeUser("legacy_provider");
+  const id = Number(db.prepare(`INSERT INTO watches
+    (user_id,tmdb_id,title,vote_average,runtime,points,is_rewatch,source,watched_at)
+    VALUES (?,450,'Legacy',8.5,140,77,1,'plex','2020-01-02 03:04:05')`).run(uid).lastInsertRowid);
+  const before = db.prepare("SELECT * FROM watches WHERE id=?").get(id);
+  const result = await importHistory(uid, "plex", [event(450, "2020-01-02T03:04:05Z", "immutable")], getMovie, { connectionId: "server:subject" });
+  assert.equal(result.verified, 1);
+  assert.equal(result.imported, 0);
+  const after = db.prepare("SELECT * FROM watches WHERE id=?").get(id);
+  assert.deepEqual(
+    { ...after, provider_service: before.provider_service, provider_connection_id: before.provider_connection_id, provider_event_id: before.provider_event_id },
+    before,
+  );
+  assert.equal(after.provider_event_id, "plex:server:subject:immutable");
+  const repeat = await importHistory(uid, "plex", [event(450, "2020-01-02T03:04:05Z", "immutable")], getMovie, { connectionId: "server:subject" });
+  assert.equal(repeat.skipped, 1);
+  assert.equal(watchesOf(uid).length, 1);
+});
+
+test("ambiguous legacy provider rows fail instead of duplicating history", async () => {
+  const uid = makeUser("ambiguous_legacy");
+  for (let i = 0; i < 2; i++) db.prepare(`INSERT INTO watches
+    (user_id,tmdb_id,title,points,source,watched_at) VALUES (?,451,'Legacy',49,'trakt','2020-01-01 00:00:00')`).run(uid);
+  const result = await importHistory(uid, "trakt", [event(451, "2020-01-01T00:00:00Z", "history")], getMovie, { connectionId: "subject" });
+  assert.equal(result.failed, 1);
+  assert.equal(result.imported, 0);
+  assert.equal(watchesOf(uid).length, 2);
+});
+
+test("equal-timestamp provider events use stable order and score the second as a cooldown rewatch", async () => {
+  const uid = makeUser("equal_time");
+  await importHistory(uid, "plex", [
+    event(452, "2020-01-01T00:00:00Z", "a"),
+    event(452, "2020-01-01T00:00:00Z", "b"),
+  ], getMovie, { connectionId: "server:subject" });
+  assert.deepEqual(watchesOf(uid).map((row) => [row.points, row.is_rewatch]), [[49, 0], [0, 1]]);
 });
 
 
@@ -96,12 +132,16 @@ test("explicit preview/apply reconciles selected placeholder in place, preserves
   const placeholderDate = "2026-07-27";
   const selectedId = Number(db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at)
     VALUES (?,501,'Film 501',49,'manual',?)`).run(uid, `${placeholderDate} 08:00:00`).lastInsertRowid);
+  const unselectedSameMovieId = Number(db.prepare(`INSERT INTO watches
+    (user_id,tmdb_id,title,points,is_rewatch,source,watched_at)
+    VALUES (?,501,'Film 501 second manual',88,1,'manual','2025-01-01 08:00:00')`).run(uid).lastInsertRowid);
   const odysseyId = Number(db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,poster_path,vote_average,runtime,release_date,genres,collection_id,collection_name,points,is_rewatch,source,watched_at)
     VALUES (?,999,'The Odyssey','/odyssey.jpg',8.2,180,'2026-01-01','["Adventure"]',77,'Epic',123,0,'manual',?)`).run(uid, `${placeholderDate} 09:00:00`).lastInsertRowid);
   db.prepare("INSERT INTO achievements (user_id,key,name,points) VALUES (?,'keeper','Keeper',200)").run(uid);
   await importHistory(uid, "plex", [event(501, "2020-02-03T21:15:00Z", "history-501")], getMovie, { connectionId: "machine:subject" });
 
   const odysseyBefore = db.prepare("SELECT * FROM watches WHERE id=?").get(odysseyId);
+  const unselectedSameMovieBefore = db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedSameMovieId);
   const achievementBefore = db.prepare("SELECT * FROM achievements WHERE user_id=?").all(uid);
   const preview = previewPlaceholderReconciliation(uid, uid, placeholderDate);
   assert.equal(preview.candidates.length, 1);
@@ -115,8 +155,9 @@ test("explicit preview/apply reconciles selected placeholder in place, preserves
   assert.equal(selected.source, "plex");
   assert.equal(selected.provider_event_id, "plex:machine:subject:history-501");
   assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(odysseyId), odysseyBefore);
+  assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedSameMovieId), unselectedSameMovieBefore);
   assert.deepEqual(db.prepare("SELECT * FROM achievements WHERE user_id=?").all(uid), achievementBefore);
-  assert.equal(watchesOf(uid).filter((row) => row.tmdb_id === 501).length, 1);
+  assert.equal(watchesOf(uid).filter((row) => row.tmdb_id === 501).length, 2);
   assert.throws(() => applyPlaceholderReconciliation(uid, uid, { nonce: preview.nonce, previewHash: preview.preview_hash, candidateIds: [preview.candidates[0].candidate_id] }), /already used|invalid/i);
 
   const audit = db.prepare("SELECT * FROM audit_log WHERE action='reconcile_placeholders' AND target_id=? ORDER BY id DESC LIMIT 1").get(uid);
