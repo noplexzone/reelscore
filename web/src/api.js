@@ -1,49 +1,63 @@
-let token = null;
 let user = null;
-try {
-  // Migrate existing session from sessionStorage (pre-v0.1 installs).
-  const migToken = window.sessionStorage?.getItem("rs_token");
-  if (migToken) {
-    window.localStorage?.setItem("rs_token", migToken);
-    window.localStorage?.setItem("rs_user", window.sessionStorage?.getItem("rs_user") || "null");
-    window.sessionStorage?.removeItem("rs_token");
-    window.sessionStorage?.removeItem("rs_user");
-  }
-  token = window.localStorage?.getItem("rs_token") || null;
-  user = JSON.parse(window.localStorage?.getItem("rs_user") || "null");
-} catch { /* storage unavailable — stay in-memory */ }
+let csrfToken = null;
 
 export function getUser() { return user; }
-export function isAuthed() { return !!token; }
+export function isAuthed() { return !!user; }
 
-export function setSession(t, u) {
-  token = t; user = u;
-  try {
-    window.localStorage?.setItem("rs_token", t);
-    window.localStorage?.setItem("rs_user", JSON.stringify(u));
-  } catch {}
+export function setSession(u, csrf) {
+  user = u || null;
+  csrfToken = csrf || null;
 }
 
 export function clearSession() {
-  token = null; user = null;
+  user = null;
+  csrfToken = null;
+}
+
+export async function hydrateSession() {
   try {
-    window.localStorage?.removeItem("rs_token");
-    window.localStorage?.removeItem("rs_user");
-  } catch {}
+    const data = await api("/auth/me", { suppressAuthRedirect: true });
+    setSession(data.user, data.csrf_token);
+    return data.user;
+  } catch {
+    clearSession();
+    return null;
+  }
+}
+
+export async function logout() {
+  try {
+    await api("/auth/logout", { method: "POST", suppressAuthRedirect: true });
+  } finally {
+    clearSession();
+  }
 }
 
 export async function api(path, opts = {}) {
+  const { suppressAuthRedirect = false, headers: extraHeaders = {}, ...fetchOpts } = opts;
+  const method = (fetchOpts.method || "GET").toUpperCase();
+  const mutating = !["GET", "HEAD", "OPTIONS"].includes(method);
+  const headers = { ...extraHeaders };
+  if (fetchOpts.body !== undefined && !(fetchOpts.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (mutating && csrfToken && path !== "/auth/login" && path !== "/auth/register") {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
+
   const res = await fetch("/api" + path, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(opts.headers || {}),
-    },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    ...fetchOpts,
+    method,
+    credentials: "same-origin",
+    headers,
+    body: fetchOpts.body === undefined
+      ? undefined
+      : fetchOpts.body instanceof FormData
+        ? fetchOpts.body
+        : JSON.stringify(fetchOpts.body),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path !== "/auth/login" && path !== "/auth/register") {
+  if (res.status === 401 && !suppressAuthRedirect && path !== "/auth/login" && path !== "/auth/register") {
     clearSession();
     window.location.href = "/login";
   }

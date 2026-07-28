@@ -10,7 +10,16 @@ services:
       - "3210:3000"
     environment:
       - TMDB_API_KEY=${TMDB_API_KEY:?Set TMDB_API_KEY in .env}
-      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
+      - APP_MODE=${APP_MODE:-self_hosted}
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - REGISTRATION_MODE=${REGISTRATION_MODE:-}
+      - TRUST_PROXY=${TRUST_PROXY:-0}
+      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
+      - PLEX_CLIENT_ID=${PLEX_CLIENT_ID:-}
+      - PLEX_ALLOWED_SERVER_ID=${PLEX_ALLOWED_SERVER_ID:-}
+      - TRAKT_CLIENT_ID=${TRAKT_CLIENT_ID:-}
+      - TRAKT_CLIENT_SECRET=${TRAKT_CLIENT_SECRET:-}
     volumes:
       - ./data:/data
     restart: unless-stopped
