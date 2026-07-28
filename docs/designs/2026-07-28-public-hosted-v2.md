@@ -37,7 +37,7 @@ Password-reset and verification responses are enumeration-resistant. Tokens are 
 Optional MFA uses encrypted TOTP secrets with field-specific AAD. Setup remains pending until a valid TOTP is confirmed. Recovery codes are random and individually HMAC-hashed. MFA login uses a short-lived one-use challenge; no full session is issued before completion.
 
 ### Email boundary
-Application code calls an internal adapter:
+Application code calls a provider-neutral internal adapter. Production delivery uses **Resend Free** initially through its HTTP API; tests use deterministic capture delivery. Resend was selected after a five-provider comparison for its 3,000-message monthly allowance, signed webhooks, idempotency, suppression handling, and low operational burden. Upgrade before the 100-message daily ceiling can block authentication mail.
 
 ```js
 sendVerification({ to, verifyUrl, expiresAt })
@@ -45,12 +45,12 @@ sendPasswordReset({ to, resetUrl, expiresAt })
 sendSyncActionRequired({ to, provider, settingsUrl, failureSummary })
 ```
 
-A production provider is selected after current pricing/deliverability research. Tests use deterministic capture delivery. Delivery is backed by durable jobs; no request starts an untracked fire-and-forget send. Messages contain no credentials or sensitive history.
+Delivery is backed by durable jobs; no request starts an untracked fire-and-forget send. Verification, reset, and security mail outrank sync notices. Messages contain no credentials or sensitive history. The sending subdomain uses DNS-only DKIM/SPF/MX records and monitored DMARC.
 
 ### Provider linking
 Provider starts require an authenticated, verified user and CSRF. Provider flow actions are link-only. Completion may attach an immutable provider identity to the same user but can never create or sign in a ReelScore user. Existing provider-login routes/UI are removed.
 
-Trakt OAuth remains encrypted, refreshable, one-use, browser/session-bound, and exact-redirect-bound. Plex is hidden behind a capability flag until feasibility passes. Hosted startup must work without Plex configuration.
+Trakt OAuth remains encrypted, refreshable, one-use, browser/session-bound, and exact-redirect-bound. **Plex is `coming_later` for the public launch:** Plex exposes no supported hosted account API for complete watch-event history, while per-server history requires reaching user-accessible PMS instances and introduces completeness, availability, and SSRF constraints. Hosted startup therefore works without Plex configuration. A future Plex capability may ship only as explicitly best-effort after a controlled account/PMS spike and isolated connector design.
 
 ### Watch ledger and provenance
 A watch is the scored event. Provider observations move to:

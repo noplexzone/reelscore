@@ -64,11 +64,13 @@
 
 ### Task 3: Link-only providers and Plex capability gate
 
-**Prerequisite:** Task 1 approved. Plex research runs independently.
+**Prerequisite:** Task 1 approved. Plex research decision recorded.
 
 **Objective:** Remove provider registration/login, require verified authenticated linking, preserve one identity per provider, and make Plex optional.
 
-**Files:** modify `server/src/provider-auth.js`, `config.js`, `routes/connections.js`, `index.js`; provider/hosted/config/security tests; Login/Connections UI; `.env.example`, Compose, hosted docs, changelog. Create `docs/research/plex-public-history-feasibility.md`.
+**Decision:** Public launch uses Trakt plus manual entry. Plex reports `coming_later`; the research found no supported Plex-hosted account API for complete watch-event history, while PMS history requires per-server network access and cannot safely be promised as universal.
+
+**Files:** modify `server/src/provider-auth.js`, `config.js`, `routes/connections.js`, `index.js`; provider/hosted/config/security tests; Login/Connections UI; `.env.example`, Compose, hosted docs, changelog. Add `docs/research/plex-public-history-feasibility.md`.
 
 **Interfaces:** only `action='link'`; verified session + CSRF required; completion cannot create users/sessions. `/api/connections` returns `available`, `coming_later`, `linked`, or `action_required`.
 
@@ -112,9 +114,9 @@
 
 ### Task 7: Sole-admin operations and production email
 
-**Prerequisite:** Tasks 1, 2, 4 and email-provider decision.
+**Prerequisite:** Tasks 1, 2, and 4.
 
-**Objective:** Complete moderation/sync controls and production email delivery.
+**Objective:** Complete moderation/sync controls and production Resend delivery behind the provider-neutral adapter.
 
 **Files:** modify `server/src/routes/admin.js`, `email.js`, `jobs.js`, `config.js`; admin/email/jobs/config tests; Admin UI/styles/env/Compose/hosted docs/changelog.
 
