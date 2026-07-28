@@ -54,7 +54,7 @@ export function createBackup() {
   const ts = new Date()
     .toISOString()
     .replace(/[-:]/g, "")
-    .replace(/\.\d{3}/, "");
+    .replace(".", "");
   const backupPath = path.join(backupsDir, `reelscore-pre-hosted-${ts}.db`);
 
   try {
@@ -228,16 +228,60 @@ function migration1() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (1)").run();
 }
 
+// Provider identities, encrypted connections, and one-use provider flows.
+function migration2() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_identities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL CHECK(provider IN ('plex','trakt')),
+      provider_user_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      display_name TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(provider, provider_user_id),
+      UNIQUE(user_id, provider)
+    );
+    CREATE TABLE IF NOT EXISTS provider_flows (
+      state_hash TEXT PRIMARY KEY,
+      provider TEXT NOT NULL CHECK(provider IN ('plex','trakt')),
+      action TEXT NOT NULL CHECK(action IN ('login','link')),
+      session_hash TEXT,
+      browser_hash TEXT NOT NULL,
+      invite_hash TEXT,
+      remote_id TEXT,
+      secret_encrypted TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_provider_flows_expires ON provider_flows(expires_at);
+  `);
+  if (!columnExists("connections", "credentials_encrypted")) db.exec(`ALTER TABLE connections ADD COLUMN credentials_encrypted TEXT`);
+  if (!columnExists("connections", "provider_identity_id")) db.exec(`ALTER TABLE connections ADD COLUMN provider_identity_id INTEGER REFERENCES provider_identities(id)`);
+  if (!columnExists("connections", "server_machine_id")) db.exec(`ALTER TABLE connections ADD COLUMN server_machine_id TEXT`);
+  if (!columnExists("connections", "token_expires_at")) db.exec(`ALTER TABLE connections ADD COLUMN token_expires_at TEXT`);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (2)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
 export function runMigrations({ skipBackup = false } = {}) {
-  const wasLegacy = !tableExists("schema_versions");
+  const latestVersion = 2;
+  const appliedBefore = tableExists("schema_versions")
+    ? new Set(db.prepare("SELECT version FROM schema_versions").all().map((row) => row.version))
+    : new Set();
+  const highestVersion = appliedBefore.size ? Math.max(...appliedBefore) : 0;
+  if (highestVersion > latestVersion) {
+    throw new Error(`[reelscore] Database schema version ${highestVersion} is newer than this build supports (${latestVersion}).`);
+  }
+  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2);
 
-  // For a non-empty legacy DB, create a backup before altering schema.
+  // Back up any non-empty database before every pending schema migration,
+  // including upgrades between versioned schemas.
   let backup = null;
-  if (wasLegacy && !skipBackup) {
+  if (hasPendingMigration && !skipBackup) {
     const userCount = tableExists("users")
       ? db.prepare("SELECT COUNT(*) c FROM users").get().c
       : 0;
@@ -262,7 +306,19 @@ export function runMigrations({ skipBackup = false } = {}) {
     : new Set();
 
   if (!applied.has(1)) {
-    migration1();
+    db.transaction(migration1)();
+  }
+  if (!applied.has(2)) {
+    db.transaction(migration2)();
+  }
+
+  if (process.env.APP_MODE === "hosted") {
+    const plaintext = db.prepare(`SELECT COUNT(*) c FROM connections
+      WHERE credentials_encrypted IS NULL
+        AND (access_token IS NOT NULL OR refresh_token IS NOT NULL)`).get().c;
+    if (plaintext > 0) {
+      throw new Error("[reelscore] Hosted startup refused: plaintext provider credentials exist. Start in self_hosted mode and re-link those providers first.");
+    }
   }
 
   return { backup };

@@ -82,6 +82,8 @@ authRouter.get("/config", (_req, res) => {
     app_mode: IS_HOSTED ? "hosted" : "self_hosted",
     registration_enabled: !IS_HOSTED && REGISTRATION_MODE !== "closed",
     registration_mode: REGISTRATION_MODE,
+    plex_enabled: true,
+    trakt_enabled: !!(process.env.TRAKT_CLIENT_ID && process.env.TRAKT_CLIENT_SECRET),
   });
 });
 

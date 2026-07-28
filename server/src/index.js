@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { authRouter, requireAuth } from "./auth.js";
+import { providerAuthRouter } from "./provider-auth.js";
 import { api } from "./routes/api.js";
 import { admin } from "./routes/admin.js";
 import {
@@ -30,6 +31,7 @@ export function createApp() {
   );
 
   // Auth routes: login, register, logout, /auth/me.
+  app.use("/api/auth/provider", providerAuthRouter);
   app.use("/api/auth", authRouter);
 
   // All other /api routes require an active session.

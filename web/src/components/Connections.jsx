@@ -2,187 +2,66 @@ import React, { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { useToast } from "../App.jsx";
 
-// Link Plex / Trakt and pull in watch history. Shown only on your own profile.
 export default function Connections({ onSynced }) {
   const [conns, setConns] = useState(null);
-  const [trakt, setTrakt] = useState(null); // pending device-code info
+  const [plex, setPlex] = useState(null);
   const [plexUrl, setPlexUrl] = useState("");
   const [plexToken, setPlexToken] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const pollRef = useRef(null);
   const toast = useToast();
-
   const load = () => api("/connections").then(setConns).catch(() => {});
-  useEffect(() => {
-    load();
-    return () => clearInterval(pollRef.current);
-  }, []);
+  useEffect(() => { load(); return () => clearTimeout(pollRef.current); }, []);
 
-  async function startTrakt() {
-    setError("");
+  async function startProvider(provider) {
+    setError(""); setBusy(`${provider}-link`);
     try {
-      const d = await api("/connections/trakt/init", { method: "POST" });
-      setTrakt(d);
-      const startedAt = Date.now();
-      pollRef.current = setInterval(async () => {
-        if (Date.now() - startedAt > d.expires_in * 1000) {
-          clearInterval(pollRef.current);
-          setTrakt(null);
-          setError("The Trakt code expired — try again.");
-          return;
-        }
-        try {
-          const r = await api("/connections/trakt/exchange", {
-            method: "POST",
-            body: { device_code: d.device_code },
-          });
-          if (!r.pending) {
-            clearInterval(pollRef.current);
-            setTrakt(null);
-            toast({ label: "Trakt linked", name: r.username || "Connected" });
-            load();
-          }
-        } catch (e) {
-          clearInterval(pollRef.current);
-          setTrakt(null);
-          setError(e.message);
-        }
-      }, (d.interval || 5) * 1000);
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-
-  async function connectPlex(e) {
-    e.preventDefault();
-    setError("");
-    setBusy("plex-connect");
-    try {
-      const r = await api("/connections/plex", {
-        method: "POST",
-        body: { server_url: plexUrl, token: plexToken },
-      });
-      toast({ label: "Plex linked", name: r.server_name });
-      setPlexUrl(""); setPlexToken("");
-      load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function sync(service) {
-    setError("");
-    setBusy(`${service}-sync`);
-    try {
-      const r = await api(`/connections/${service}/sync`, { method: "POST" });
-      toast({
-        label: `${service === "plex" ? "Plex" : "Trakt"} sync complete`,
-        name: `${r.imported} imported · ${r.verified} verified`,
-        desc: r.skipped ? `${r.skipped} already synced` : null,
-      });
-      for (const a of r.new_achievements) {
-        toast({ label: "Achievement unlocked", name: a.name, desc: a.description, points: a.points });
+      const data = await api(`/auth/provider/${provider}/start`, { method: "POST", body: { action: "link" } });
+      if (provider === "trakt") {
+        window.location.assign(data.auth_url);
+        return;
       }
-      load();
-      onSynced?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy("");
-    }
+      window.open(data.auth_url, "_blank", "noopener,noreferrer");
+      setPlex({ state: data.state, servers: [] });
+      pollPlex(data.state);
+    } catch (err) { setError(err.message); } finally { setBusy(""); }
   }
-
-  async function unlink(service) {
-    await api(`/connections/${service}`, { method: "DELETE" });
-    load();
+  async function pollPlex(state) {
+    try {
+      const data = await api(`/auth/provider/plex/poll?state=${encodeURIComponent(state)}`);
+      if (data.pending) pollRef.current = setTimeout(() => pollPlex(state), 2000);
+      else setPlex({ state, servers: data.servers });
+    } catch (err) { setError(err.message); }
   }
-
+  async function choosePlex(selectionId) {
+    setBusy("plex-link"); setError("");
+    try { await api("/auth/provider/plex/complete", { method: "POST", body: { state: plex.state, selection_id: selectionId } }); setPlex(null); toast({ label: "Plex linked", name: "Verified server" }); load(); }
+    catch (err) { setError(err.message); } finally { setBusy(""); }
+  }
+  async function connectManualPlex(event) {
+    event.preventDefault(); setBusy("plex-link"); setError("");
+    try { const result = await api("/connections/plex", { method: "POST", body: { server_url: plexUrl, token: plexToken } }); toast({ label: "Plex linked", name: result.server_name }); setPlexUrl(""); setPlexToken(""); load(); }
+    catch (err) { setError(err.message); } finally { setBusy(""); }
+  }
+  async function sync(service) {
+    setBusy(`${service}-sync`); setError("");
+    try {
+      const result = await api(`/connections/${service}/sync`, { method: "POST" });
+      toast({ label: `${service === "plex" ? "Plex" : "Trakt"} sync complete`, name: `${result.imported} imported · ${result.verified} verified`, desc: result.skipped ? `${result.skipped} already synced` : null });
+      for (const achievement of result.new_achievements) toast({ label: "Achievement unlocked", name: achievement.name, desc: achievement.description, points: achievement.points });
+      load(); onSynced?.();
+    } catch (err) { setError(err.message); } finally { setBusy(""); }
+  }
+  async function unlink(service) { await api(`/connections/${service}`, { method: "DELETE" }); load(); }
   if (!conns) return null;
 
-  return (
-    <>
-      <h2 className="section-title">Connections</h2>
-      <p className="muted" style={{ marginTop: -6 }}>
-        Link a service and its history imports automatically — synced films get a
-        verified badge as proof they're really in your watch history.
-      </p>
-      {error && <p className="error">{error}</p>}
-
-      <div className="card" style={{ marginBottom: 10 }}>
-        <div className="row">
-          <div className="grow">
-            <b>Trakt</b>{" "}
-            {conns.trakt.linked && <span className="verified trakt">✓ {conns.trakt.username || "linked"}</span>}
-            <div className="muted">
-              {!conns.trakt.configured
-                ? "Not configured on this server (set TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET)."
-                : conns.trakt.linked
-                ? conns.trakt.last_synced_at
-                  ? `Last synced ${conns.trakt.last_synced_at} UTC`
-                  : "Linked — run your first sync."
-                : trakt
-                ? <>Go to <b>{trakt.verification_url}</b> and enter code <b className="pts">{trakt.user_code}</b> — waiting…</>
-                : "Import your Trakt watch history."}
-            </div>
-          </div>
-          {conns.trakt.linked ? (
-            <>
-              <button className="btn small" onClick={() => sync("trakt")} disabled={busy === "trakt-sync"}>
-                {busy === "trakt-sync" ? "Syncing…" : "Sync now"}
-              </button>
-              <button className="btn ghost small" onClick={() => unlink("trakt")}>Unlink</button>
-            </>
-          ) : (
-            conns.trakt.configured && !trakt && (
-              <button className="btn small" onClick={startTrakt}>Connect</button>
-            )
-          )}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="row" style={{ flexWrap: "wrap" }}>
-          <div className="grow" style={{ minWidth: 220 }}>
-            <b>Plex</b>{" "}
-            {conns.plex.linked && <span className="verified plex">✓ {conns.plex.server_name || "linked"}</span>}
-            <div className="muted">
-              {conns.plex.linked
-                ? conns.plex.last_synced_at
-                  ? `Last synced ${conns.plex.last_synced_at} UTC`
-                  : "Linked — run your first sync."
-                : "Import watched movies from your Plex server."}
-            </div>
-          </div>
-          {conns.plex.linked ? (
-            <>
-              <button className="btn small" onClick={() => sync("plex")} disabled={busy === "plex-sync"}>
-                {busy === "plex-sync" ? "Syncing…" : "Sync now"}
-              </button>
-              <button className="btn ghost small" onClick={() => unlink("plex")}>Unlink</button>
-            </>
-          ) : (
-            <form onSubmit={connectPlex} className="plex-form">
-              <input
-                placeholder="http://your-server:32400"
-                value={plexUrl}
-                onChange={(e) => setPlexUrl(e.target.value)}
-              />
-              <input
-                type="password"
-                placeholder="X-Plex-Token"
-                value={plexToken}
-                onChange={(e) => setPlexToken(e.target.value)}
-              />
-              <button className="btn small" disabled={busy === "plex-connect"}>
-                {busy === "plex-connect" ? "Checking…" : "Connect"}
-              </button>
-            </form>
-          )}
-        </div>
-      </div>
-    </>
-  );
+  const card = (service, label, detail) => <div className="card" style={{ marginBottom: 10 }}><div className="row"><div className="grow"><b>{label}</b>{" "}{conns[service].linked && <span className={`verified ${service}`}>✓ {detail || "linked"}</span>}<div className="muted">{conns[service].linked ? conns[service].last_synced_at ? `Last synced ${conns[service].last_synced_at} UTC` : "Linked — run your first sync." : `Securely link your ${label} account.`}</div></div>{conns[service].linked ? <><button className="btn small" onClick={() => sync(service)} disabled={busy === `${service}-sync`}>{busy === `${service}-sync` ? "Syncing…" : "Sync now"}</button><button className="btn ghost small" onClick={() => unlink(service)}>Unlink</button></> : <button className="btn small" onClick={() => startProvider(service)} disabled={!!busy}>Link {label}</button>}</div></div>;
+  return <><h2 className="section-title">Connections</h2><p className="muted" style={{ marginTop: -6 }}>Provider tokens stay encrypted and are never returned to the browser.</p>{error && <p className="error">{error}</p>}
+    {conns.trakt.configured && card("trakt", "Trakt", conns.trakt.username)}
+    {card("plex", "Plex", conns.plex.server_name)}
+    {plex && plex.servers.length === 0 && <p className="muted">Approve Plex in the new tab. Waiting for discovered allowed servers…</p>}
+    {plex?.servers.map((server) => <button key={server.selection_id} className="btn ghost" disabled={!!busy} onClick={() => choosePlex(server.selection_id)}>Use {server.name}</button>)}
+    {!conns.plex.linked && conns.app_mode === "self_hosted" && <details><summary>Advanced: manually connect Plex</summary><form onSubmit={connectManualPlex} className="plex-form"><input placeholder="http://your-server:32400" value={plexUrl} onChange={(e) => setPlexUrl(e.target.value)} /><input type="password" placeholder="X-Plex-Token" value={plexToken} onChange={(e) => setPlexToken(e.target.value)} /><button className="btn small" disabled={!!busy}>Connect</button></form></details>}
+  </>;
 }

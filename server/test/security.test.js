@@ -98,6 +98,9 @@ test("hosted: /register returns 403 (closed)", async () => {
   const cfg = validateConfig({
     APP_MODE: "hosted",
     SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
+    CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
+    PLEX_ALLOWED_SERVER_ID: "allowed-machine",
+    PLEX_CLIENT_IDENTIFIER: "reelscore-test",
     PUBLIC_URL: "https://test.example.com",
   });
   assert.equal(cfg.IS_HOSTED, true);

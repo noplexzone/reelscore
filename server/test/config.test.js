@@ -63,6 +63,16 @@ test("self_hosted: REGISTRATION_MODE defaults to open", () => {
 // Hosted mode validations — fail closed
 // ---------------------------------------------------------------------------
 
+const hosted = (overrides = {}) => ({
+  APP_MODE: "hosted",
+  SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
+  CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
+  PLEX_ALLOWED_SERVER_ID: "allowed-machine",
+  PLEX_CLIENT_IDENTIFIER: "reelscore-test",
+  PUBLIC_URL: "https://example.com",
+  ...overrides,
+});
+
 test("hosted: missing SESSION_SECRET throws", () => {
   assert.throws(
     () =>
@@ -88,73 +98,60 @@ test("hosted: short SESSION_SECRET throws", () => {
 
 test("hosted: missing PUBLIC_URL throws", () => {
   assert.throws(
-    () =>
-      validateConfig({
-        APP_MODE: "hosted",
-        SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-      }),
+    () => validateConfig(hosted({ PUBLIC_URL: undefined })),
     /PUBLIC_URL/
   );
 });
 
 test("hosted: invalid PUBLIC_URL throws", () => {
   assert.throws(
-    () =>
-      validateConfig({
-        APP_MODE: "hosted",
-        SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-        PUBLIC_URL: "not-a-url",
-      }),
+    () => validateConfig(hosted({ PUBLIC_URL: "not-a-url" })),
     /PUBLIC_URL/
   );
 });
 
 test("hosted: non-http PUBLIC_URL throws", () => {
   assert.throws(
-    () =>
-      validateConfig({
-        APP_MODE: "hosted",
-        SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-        PUBLIC_URL: "ftp://example.com",
-      }),
+    () => validateConfig(hosted({ PUBLIC_URL: "ftp://example.com" })),
     /PUBLIC_URL/
   );
 });
 
 test("hosted: negative TRUST_PROXY throws", () => {
   assert.throws(
-    () =>
-      validateConfig({
-        APP_MODE: "hosted",
-        SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-        PUBLIC_URL: "https://example.com",
-        TRUST_PROXY: "-1",
-      }),
+    () => validateConfig(hosted({ TRUST_PROXY: "-1" })),
     /TRUST_PROXY/
   );
 });
 
 test("hosted: non-numeric TRUST_PROXY throws", () => {
   assert.throws(
-    () =>
-      validateConfig({
-        APP_MODE: "hosted",
-        SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-        PUBLIC_URL: "https://example.com",
-        TRUST_PROXY: "cloudflare",
-      }),
+    () => validateConfig(hosted({ TRUST_PROXY: "cloudflare" })),
     /TRUST_PROXY/
   );
 });
 
+test("hosted: missing Plex client identifier throws", () => {
+  assert.throws(
+    () => validateConfig(hosted({ PLEX_CLIENT_IDENTIFIER: undefined })),
+    /PLEX_CLIENT_IDENTIFIER/
+  );
+});
+
+test("hosted: credential key must differ from session secret", () => {
+  const same = "same-secret-that-is-at-least-thirty-two-characters";
+  assert.throws(
+    () => validateConfig(hosted({ SESSION_SECRET: same, CREDENTIAL_ENCRYPTION_KEY: same })),
+    /must be different/
+  );
+});
+
 test("hosted: valid config succeeds", () => {
-  const cfg = validateConfig({
-    APP_MODE: "hosted",
-    SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
+  const cfg = validateConfig(hosted({
     PUBLIC_URL: "https://app.example.com",
     REGISTRATION_MODE: "invite",
     TRUST_PROXY: "1",
-  });
+  }));
   assert.equal(cfg.IS_HOSTED, true);
   assert.equal(cfg.REGISTRATION_MODE, "invite");
   assert.equal(cfg.TRUST_PROXY, 1);
@@ -162,20 +159,11 @@ test("hosted: valid config succeeds", () => {
 });
 
 test("hosted: REGISTRATION_MODE defaults to invite", () => {
-  const cfg = validateConfig({
-    APP_MODE: "hosted",
-    SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-    PUBLIC_URL: "https://example.com",
-  });
+  const cfg = validateConfig(hosted());
   assert.equal(cfg.REGISTRATION_MODE, "invite");
 });
 
 test("hosted: REGISTRATION_MODE=closed is valid", () => {
-  const cfg = validateConfig({
-    APP_MODE: "hosted",
-    SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
-    PUBLIC_URL: "https://example.com",
-    REGISTRATION_MODE: "closed",
-  });
+  const cfg = validateConfig(hosted({ REGISTRATION_MODE: "closed" }));
   assert.equal(cfg.REGISTRATION_MODE, "closed");
 });
