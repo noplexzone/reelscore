@@ -23,6 +23,14 @@ This uses the normal `noplexzone/reelscore:develop` image and the existing `/dat
 - Manual rows not selected or not matched remain byte-for-byte unchanged. A manually logged unreleased or unavailable title such as The Odyssey is not removed merely because Plex does not return it.
 - Stable provider event IDs make repeated/concurrent imports idempotent. Scoring is recomputed chronologically after watch dates change.
 
+Plex owner PIN links restrict history to local Plex account ID 1. Shared-user
+links are accepted only when the server response contains one unambiguous
+account. `PLEX_HISTORY_ACCOUNT_ID` can explicitly scope a legacy/manual link.
+
+The reconciliation preview defaults to the current UTC date. Set
+`ONBOARDING_PLACEHOLDER_DATE=YYYY-MM-DD` or supply `placeholder_date` to the
+admin preview endpoint when reviewing a different onboarding date.
+
 ## Cloudflare
 
 The app does not require Cloudflare Access, but Access is recommended for a closed test. If the test is public, use app invites and Cloudflare rate limiting/bot controls. TLS terminates at Cloudflare; the hosted app still requires an `https://` `PUBLIC_URL` and Secure cookies.

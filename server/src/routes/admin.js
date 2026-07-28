@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { requireAdmin, requireCsrf, randomHex, sha256, deleteUserSessions } from "../auth.js";
+import { applyPlaceholderReconciliation, previewPlaceholderReconciliation } from "../sync.js";
 
 export const admin = Router();
 
@@ -216,4 +217,28 @@ admin.post("/invites/:id/revoke", (req, res) => {
      VALUES (?, 'revoke_invite', ?, ?)`
   ).run(req.user.id, id, req.ip);
   res.json({ ok: true });
+});
+
+// Explicit, one-use onboarding placeholder reconciliation. Preview is read-only;
+// apply accepts only IDs from the exact, still-current preview snapshot.
+admin.post("/users/:id/reconciliation/preview", (req, res, next) => {
+  const targetUserId = parseInt(req.params.id, 10);
+  if (!targetUserId || !db.prepare("SELECT id FROM users WHERE id=?").get(targetUserId)) return res.status(404).json({ error: "User not found." });
+  try {
+    res.set("Cache-Control", "no-store").json(previewPlaceholderReconciliation(req.user.id, targetUserId, req.body?.placeholder_date));
+  } catch (error) { next(error); }
+});
+
+admin.post("/users/:id/reconciliation/apply", (req, res, next) => {
+  const targetUserId = parseInt(req.params.id, 10);
+  if (!targetUserId || !db.prepare("SELECT id FROM users WHERE id=?").get(targetUserId)) return res.status(404).json({ error: "User not found." });
+  try {
+    const result = applyPlaceholderReconciliation(req.user.id, targetUserId, {
+      nonce: req.body?.nonce,
+      previewHash: req.body?.preview_hash,
+      candidateIds: req.body?.candidate_ids,
+      ip: req.ip,
+    });
+    res.set("Cache-Control", "no-store").json(result);
+  } catch (error) { next(error); }
 });

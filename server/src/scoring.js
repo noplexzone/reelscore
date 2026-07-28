@@ -15,13 +15,23 @@ export function basePoints({ voteAverage, runtime }) {
   return Math.round(100 * Math.pow(rating / 10, 2) * runtimeFactor);
 }
 
-export function watchPoints({ voteAverage, runtime, priorWatches }) {
+function timestamp(value) {
+  if (value instanceof Date) return value.getTime();
+  const text = String(value || "");
+  return new Date(text.includes("T") ? text : `${text.replace(" ", "T")}Z`).getTime();
+}
+
+export function watchPoints({ voteAverage, runtime, priorWatches, watchedAt = new Date() }) {
   const base = basePoints({ voteAverage, runtime });
-  if (!priorWatches || priorWatches.length === 0) {
+  const current = timestamp(watchedAt);
+  const earlier = (priorWatches || [])
+    .map((value) => ({ value, time: timestamp(value) }))
+    .filter(({ time }) => Number.isFinite(time) && time < current)
+    .sort((a, b) => b.time - a.time);
+  if (earlier.length === 0) {
     return { points: base, isRewatch: false, reason: "first_watch" };
   }
-  const last = priorWatches[0]; // most recent, ISO datetime string
-  const daysSince = (Date.now() - new Date(last + "Z").getTime()) / 86400000;
+  const daysSince = (current - earlier[0].time) / 86400000;
   if (daysSince < REWATCH_COOLDOWN_DAYS) {
     return { points: 0, isRewatch: true, reason: "rewatch_cooldown" };
   }

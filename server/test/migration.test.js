@@ -209,12 +209,15 @@ test("migration: idempotent — re-running runMigrations changes nothing", () =>
   );
 });
 
-test("migration: watches have provider_event_id column", () => {
-  const info = db.prepare("PRAGMA table_info(watches)").all();
-  assert.ok(
-    info.some((c) => c.name === "provider_event_id"),
-    "provider_event_id column exists"
-  );
+test("migration: watches have provider event scope and reconciliation preview schema", () => {
+  const columns = new Set(db.prepare("PRAGMA table_info(watches)").all().map((column) => column.name));
+  assert.ok(columns.has("provider_event_id"));
+  assert.ok(columns.has("provider_service"));
+  assert.ok(columns.has("provider_connection_id"));
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_watches_event'").get().sql;
+  assert.match(sql, /user_id, provider_service, provider_connection_id, provider_event_id/i);
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reconciliation_previews'").get());
+  assert.ok(db.prepare("SELECT version FROM schema_versions WHERE version=3").get());
 });
 
 test("backup includes committed WAL rows when a reader prevents checkpointing", () => {

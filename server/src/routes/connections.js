@@ -10,6 +10,21 @@ import { importHistory, traktConfigured, traktDeviceCode, traktDeviceToken, trak
 export const connections = Router();
 const getConn = (userId, service) => db.prepare("SELECT * FROM connections WHERE user_id=? AND service=?").get(userId, service);
 const context = (userId, service) => ({ userId, connectionId: `${userId}:${service}`, provider: service, field: "credentials" });
+const syncLocks = new Map();
+async function withConnectionLock(key, task) {
+  const previous = syncLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  syncLocks.set(key, current);
+  try { return await current; }
+  finally { if (syncLocks.get(key) === current) syncLocks.delete(key); }
+}
+function eventConnectionId(conn) {
+  const identity = conn.provider_identity_id
+    ? db.prepare("SELECT provider_user_id FROM provider_identities WHERE id=?").get(conn.provider_identity_id)
+    : null;
+  const subject = identity?.provider_user_id || `legacy-user-${conn.user_id}`;
+  return conn.service === "plex" ? `${conn.server_machine_id || "unverified-server"}:${subject}` : subject;
+}
 function credentials(conn) {
   if (conn.credentials_encrypted) {
     const aad = context(conn.user_id, conn.service);
@@ -78,24 +93,31 @@ connections.post("/:service/sync", async (req, res, next) => {
   const conn = getConn(req.user.id, service);
   if (!conn) return res.status(404).json({ error: `Link ${service} first.` });
   try {
-    let items;
-    if (service === "trakt") {
-      const refreshed = await traktHistoryWithRefresh(credentials(conn), conn.token_expires_at);
-      items = refreshed.items;
-      if (refreshed.credentials) db.prepare("UPDATE connections SET credentials_encrypted=?,token_expires_at=? WHERE user_id=? AND service='trakt'").run(encryptJson(refreshed.credentials, context(req.user.id, "trakt")), refreshed.expiresAt, req.user.id);
-    } else {
-      if (IS_HOSTED && !conn.server_machine_id) { const error = new Error("Hosted Plex connection has no verified machine identity."); error.status = 403; throw error; }
-      items = await plexWatchedMovies(conn.server_url, credentials(conn).token, conn.server_machine_id || null);
-    }
-    const result = await importHistory(req.user.id, service, items, movieDetails);
-    const newAchievements = [], seenKeys = new Set(), collectionIds = new Set(), personIds = new Set();
-    const collect = (list) => { for (const achievement of list || []) if (!seenKeys.has(achievement.key)) { seenKeys.add(achievement.key); newAchievements.push(achievement); } };
-    for (const tmdbId of result.movies) { try { const movie = await movieDetails(tmdbId); if (movie.belongs_to_collection?.id) collectionIds.add(movie.belongs_to_collection.id); for (const person of notablePeopleInMovie(movie.credits)) personIds.add(person.id); } catch {} }
-    collect(await evaluate(req.user.id, {}));
-    for (const collectionId of collectionIds) collect(await evaluate(req.user.id, { collection_id: collectionId }));
-    for (const personId of personIds) { try { const achievement = await checkPersonCompletion(req.user.id, personId); if (achievement) collect([achievement]); } catch {} }
-    db.prepare("UPDATE connections SET last_synced_at=datetime('now') WHERE user_id=? AND service=?").run(req.user.id, service);
-    res.json({ imported: result.imported, verified: result.verified, skipped: result.skipped, failed: result.failed, new_achievements: newAchievements });
+    const output = await withConnectionLock(`${req.user.id}:${service}:${eventConnectionId(conn)}`, async () => {
+      let items;
+      if (service === "trakt") {
+        const refreshed = await traktHistoryWithRefresh(credentials(conn), conn.token_expires_at);
+        items = refreshed.items;
+        if (refreshed.credentials) db.prepare("UPDATE connections SET credentials_encrypted=?,token_expires_at=? WHERE user_id=? AND service='trakt'").run(encryptJson(refreshed.credentials, context(req.user.id, "trakt")), refreshed.expiresAt, req.user.id);
+      } else {
+        if (IS_HOSTED && !conn.server_machine_id) { const error = new Error("Hosted Plex connection has no verified machine identity."); error.status = 403; throw error; }
+        const plexCredentials = credentials(conn);
+        const configuredAccountId = Number(process.env.PLEX_HISTORY_ACCOUNT_ID || 0) || null;
+        items = await plexWatchedMovies(conn.server_url, plexCredentials.token, conn.server_machine_id || null, {
+          accountId: plexCredentials.isOwner ? 1 : configuredAccountId,
+        });
+      }
+      const result = await importHistory(req.user.id, service, items, movieDetails, { connectionId: eventConnectionId(conn) });
+      const newAchievements = [], seenKeys = new Set(), collectionIds = new Set(), personIds = new Set();
+      const collect = (list) => { for (const achievement of list || []) if (!seenKeys.has(achievement.key)) { seenKeys.add(achievement.key); newAchievements.push(achievement); } };
+      for (const tmdbId of result.movies) { try { const movie = await movieDetails(tmdbId); if (movie.belongs_to_collection?.id) collectionIds.add(movie.belongs_to_collection.id); for (const person of notablePeopleInMovie(movie.credits)) personIds.add(person.id); } catch {} }
+      collect(await evaluate(req.user.id, {}));
+      for (const collectionId of collectionIds) collect(await evaluate(req.user.id, { collection_id: collectionId }));
+      for (const personId of personIds) { try { const achievement = await checkPersonCompletion(req.user.id, personId); if (achievement) collect([achievement]); } catch {} }
+      db.prepare("UPDATE connections SET last_synced_at=datetime('now') WHERE user_id=? AND service=?").run(req.user.id, service);
+      return { imported: result.imported, verified: result.verified, skipped: result.skipped, failed: result.failed, new_achievements: newAchievements };
+    });
+    res.json(output);
   } catch (error) { if (error.status === 401) return res.status(401).json({ error: `${service} rejected the stored credentials — re-link and try again.` }); next(error); }
 });
 connections.delete("/:service", (req, res) => {

@@ -146,7 +146,14 @@ providerAuthRouter.get("/plex/poll", providerFlowLimiter, async (req, res, next)
       const token = resource.accessToken || resource.access_token || pin.authToken;
       for (const candidate of resource.connections || resource.Connection || []) {
         const origin = validateDiscoveredPlexUri(candidate.uri);
-        if (origin && token) servers.push({ selectionId: randomHex(16), machineId, name: resource.name || "Plex Media Server", origin, token });
+        if (origin && token) servers.push({
+          selectionId: randomHex(16),
+          machineId,
+          name: resource.name || "Plex Media Server",
+          origin,
+          token,
+          isOwner: resource.owned === true || Number(resource.owned) === 1,
+        });
       }
     }
     const secret = { accountToken: pin.authToken, user: { id: String(user.id), name: user.username || user.title }, servers };
@@ -162,7 +169,10 @@ providerAuthRouter.post("/plex/complete", providerFlowLimiter, async (req, res, 
     const selected = secret.servers.find((server) => server.selectionId === req.body?.selection_id);
     if (!selected || !selected.machineId || (PLEX_ALLOWED_SERVER_ID && selected.machineId !== PLEX_ALLOWED_SERVER_ID)) return res.status(403).json({ error: "That Plex server is not allowed." });
     const displayName = await verifyPlex(selected.origin, selected.token, selected.machineId);
-    res.set("Cache-Control", "no-store").json(await finishFlow(flow, "plex", secret.user, { token: selected.token }, { serverUrl: selected.origin, machineId: selected.machineId, displayName }, req, res, { allowedServer: true }));
+    res.set("Cache-Control", "no-store").json(await finishFlow(flow, "plex", secret.user, {
+      token: selected.token,
+      isOwner: selected.isOwner,
+    }, { serverUrl: selected.origin, machineId: selected.machineId, displayName }, req, res, { allowedServer: true }));
   } catch (error) { next(error); }
 });
 

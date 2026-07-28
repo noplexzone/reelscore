@@ -374,6 +374,44 @@ test("normal user cannot create invites", async () => {
 // User search
 // ---------------------------------------------------------------------------
 
+test("admin reconciliation preview/apply is explicit, CSRF-protected, one-use, and forbidden to normal users", async () => {
+  const { db } = await import("../src/db.js");
+  db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at) VALUES (?,8801,'Admin Fixture',49,'manual','2026-07-27 12:00:00')`).run(userId);
+  db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at,provider_service,provider_connection_id,provider_event_id)
+    VALUES (?,8801,'Admin Fixture',49,'plex','2020-01-01 12:00:00','plex','machine:subject','plex:machine:subject:8801')`).run(userId);
+
+  const userLogin = await fetch(`${srv.base}/api/auth/login`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "normaluser", password: "normalpass123" }),
+  });
+  const userLoginData = await userLogin.json();
+  const currentUserCookie = parseCookies(userLogin).session;
+  const denied = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${currentUserCookie}`, "X-CSRF-Token": userLoginData.csrf_token },
+    body: JSON.stringify({ placeholder_date: "2026-07-27" }),
+  });
+  assert.equal(denied.status, 403);
+
+  const previewR = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${adminCookie}`, "X-CSRF-Token": adminCsrf },
+    body: JSON.stringify({ placeholder_date: "2026-07-27" }),
+  });
+  const previewText = await previewR.text();
+  assert.equal(previewR.status, 200, previewText);
+  const preview = JSON.parse(previewText);
+  assert.equal(preview.candidates.length, 1);
+
+  const applyBody = { nonce: preview.nonce, preview_hash: preview.preview_hash, candidate_ids: [preview.candidates[0].candidate_id] };
+  const applyR = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/apply`, {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${adminCookie}`, "X-CSRF-Token": adminCsrf }, body: JSON.stringify(applyBody),
+  });
+  assert.equal(applyR.status, 200, await applyR.text());
+  const replay = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/apply`, {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${adminCookie}`, "X-CSRF-Token": adminCsrf }, body: JSON.stringify(applyBody),
+  });
+  assert.equal(replay.status, 409);
+});
+
 test("admin can search users by username", async () => {
   const r = await fetch(`${srv.base}/api/admin/users?q=admin`, {
     headers: { Cookie: `session=${adminCookie}` },

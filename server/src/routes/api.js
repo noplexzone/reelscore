@@ -10,6 +10,7 @@ import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "..
 import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notablePeopleInMovie } from "../people.js";
 import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
+import { recomputeUserWatchScores } from "../sync.js";
 
 export const api = Router();
 
@@ -338,13 +339,16 @@ api.post("/watches", async (req, res, next) => {
         isRewatch ? 1 : 0
       );
 
+    db.transaction(() => recomputeUserWatchScores(req.user.id, m.id))();
+    const scoredWatch = db.prepare("SELECT points,is_rewatch FROM watches WHERE id=?").get(info.lastInsertRowid);
+
     const newAchievements = await evaluate(req.user.id, {
       collection_id: m.belongs_to_collection?.id || null,
       person_ids: notablePeopleInMovie(m.credits).map((p) => p.id),
     });
 
     res.json({
-      watch: { id: info.lastInsertRowid, title: m.title, points, isRewatch, reason },
+      watch: { id: info.lastInsertRowid, title: m.title, points: scoredWatch.points, isRewatch: !!scoredWatch.is_rewatch, reason },
       new_achievements: newAchievements,
       score: totalScore(req.user.id),
     });
@@ -366,9 +370,13 @@ api.get("/watches", (req, res) => {
 api.delete("/watches/:id", (req, res) => {
   const watchId = parsePositiveInt(req.params.id);
   if (!watchId) return res.status(400).json({ error: "Invalid watch ID." });
-  const result = db
-    .prepare("DELETE FROM watches WHERE id = ? AND user_id = ?")
-    .run(watchId, req.user.id);
+  const result = db.transaction(() => {
+    const watch = db.prepare("SELECT tmdb_id FROM watches WHERE id = ? AND user_id = ?").get(watchId, req.user.id);
+    if (!watch) return { changes: 0 };
+    const deleted = db.prepare("DELETE FROM watches WHERE id = ? AND user_id = ?").run(watchId, req.user.id);
+    if (deleted.changes) recomputeUserWatchScores(req.user.id, watch.tmdb_id);
+    return deleted;
+  })();
   if (result.changes === 0) return res.status(404).json({ error: "Watch entry not found." });
   res.json({ ok: true });
 });

@@ -263,12 +263,38 @@ function migration2() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (2)").run();
 }
 
+// Event-scoped provider identity and one-use reconciliation previews.
+function migration3() {
+  if (!columnExists("watches", "provider_service")) db.exec(`ALTER TABLE watches ADD COLUMN provider_service TEXT`);
+  if (!columnExists("watches", "provider_connection_id")) db.exec(`ALTER TABLE watches ADD COLUMN provider_connection_id TEXT`);
+  db.exec(`
+    DROP INDEX IF EXISTS idx_watches_event;
+    CREATE UNIQUE INDEX idx_watches_event
+      ON watches(user_id, provider_service, provider_connection_id, provider_event_id)
+      WHERE provider_event_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS reconciliation_previews (
+      nonce_hash TEXT PRIMARY KEY,
+      preview_hash TEXT NOT NULL,
+      actor_user_id INTEGER NOT NULL REFERENCES users(id),
+      target_user_id INTEGER NOT NULL REFERENCES users(id),
+      placeholder_date TEXT NOT NULL,
+      candidates_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_reconciliation_previews_expiry
+      ON reconciliation_previews(expires_at);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (3)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
 export function runMigrations({ skipBackup = false } = {}) {
-  const latestVersion = 2;
+  const latestVersion = 3;
   const appliedBefore = tableExists("schema_versions")
     ? new Set(db.prepare("SELECT version FROM schema_versions").all().map((row) => row.version))
     : new Set();
@@ -276,7 +302,7 @@ export function runMigrations({ skipBackup = false } = {}) {
   if (highestVersion > latestVersion) {
     throw new Error(`[reelscore] Database schema version ${highestVersion} is newer than this build supports (${latestVersion}).`);
   }
-  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2);
+  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2) || !appliedBefore.has(3);
 
   // Back up any non-empty database before every pending schema migration,
   // including upgrades between versioned schemas.
@@ -310,6 +336,9 @@ export function runMigrations({ skipBackup = false } = {}) {
   }
   if (!applied.has(2)) {
     db.transaction(migration2)();
+  }
+  if (!applied.has(3)) {
+    db.transaction(migration3)();
   }
 
   if (process.env.APP_MODE === "hosted") {

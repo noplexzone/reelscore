@@ -1,8 +1,17 @@
+process.env.DATA_DIR = `/tmp/rs-provider-${process.pid}`;
+process.env.SESSION_SECRET = "test-secret-that-is-at-least-32-chars-long";
+process.env.NODE_ENV = "test";
+
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
 let stubServer, origin, providers, db, createApp, startTestServer, parseCookies, sync;
+let traktHistoryPayload = [];
+let plexHistoryPayload = [
+  { historyKey: "/status/sessions/history/9001", ratingKey: "501", viewedAt: 1577836800, accountID: 42, Guid: [{ id: "tmdb://501" }] },
+  { historyKey: "/status/sessions/history/9002", ratingKey: "502", viewedAt: 1577836860, accountID: 42 },
+];
 const requests = [];
 function json(res, status, value, headers = {}) { const body = JSON.stringify(value); res.writeHead(status, { "content-type": "application/json", ...headers }); res.end(body); }
 
@@ -15,10 +24,12 @@ before(async () => {
     if (req.method === "POST" && req.url.startsWith("/api/v2/pins")) return json(res, 200, { id: 7, code: "ABCD", expiresIn: 600 });
     if (req.url === "/api/v2/pins/7") return json(res, 200, { authToken: "PLEX_ACCOUNT_SECRET" });
     if (req.url === "/api/v2/user") return json(res, 200, { id: 991, username: "same_name" });
-    if (req.url.startsWith("/api/v2/resources")) return json(res, 200, [{ provides: "server", clientIdentifier: "allowed-machine", name: "Allowed Plex", accessToken: "PLEX_SERVER_SECRET", connections: [{ uri: `${origin}/web` }, { uri: "http://169.254.169.254/latest/meta-data" }] }]);
+    if (req.url.startsWith("/api/v2/resources")) return json(res, 200, [{ provides: "server", owned: true, clientIdentifier: "allowed-machine", name: "Allowed Plex", accessToken: "PLEX_SERVER_SECRET", connections: [{ uri: `${origin}/web` }, { uri: "http://169.254.169.254/latest/meta-data" }] }]);
     if (req.url === "/identity") return json(res, 200, { MediaContainer: { machineIdentifier: "allowed-machine", friendlyName: "Verified Plex" } });
     if (req.url === "/oauth/token") return json(res, 200, { access_token: "NEW_TRAKT_SECRET", refresh_token: "NEW_REFRESH", created_at: Math.floor(Date.now() / 1000), expires_in: 3600 });
-    if (req.url.startsWith("/sync/history/movies")) return req.headers.authorization === "Bearer OLD_TRAKT_SECRET" ? json(res, 401, {}) : json(res, 200, []);
+    if (req.url.startsWith("/sync/history/movies")) return req.headers.authorization === "Bearer OLD_TRAKT_SECRET" ? json(res, 401, {}) : json(res, 200, traktHistoryPayload);
+    if (req.url.startsWith("/status/sessions/history/all")) return json(res, 200, { MediaContainer: { Metadata: plexHistoryPayload } });
+    if (req.url === "/library/metadata/502?includeGuids=1") return json(res, 200, { MediaContainer: { Metadata: [{ ratingKey: "502", Guid: [{ id: "com.plexapp.agents.themoviedb://502?lang=en" }] }] } });
     if (req.url === "/users/settings") return json(res, 200, { user: { username: "same_name", ids: { trakt: 444, slug: "mutable-slug" } } });
     json(res, 404, {});
   });
@@ -95,7 +106,7 @@ test("Plex PIN login filters machine IDs, verifies /identity, stores ciphertext,
     assert.equal(row.access_token, null);
     assert.equal(row.refresh_token, null);
     assert.ok(!row.credentials_encrypted.includes("PLEX_SERVER_SECRET"));
-    assert.equal(providers.decryptJson(row.credentials_encrypted, ctx(row.user_id)).token, "PLEX_SERVER_SECRET");
+    assert.deepEqual(providers.decryptJson(row.credentials_encrypted, ctx(row.user_id)), { token: "PLEX_SERVER_SECRET", isOwner: true });
     const replay = await fetch(`${server.base}/api/auth/provider/plex/complete`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ state: started.state, selection_id: polled.servers[0].selection_id }) });
     assert.notEqual(replay.status, 200);
     assert.ok(requests.some((request) => request.url === "/identity"));
@@ -124,6 +135,44 @@ test("Trakt exact callback URI and refresh-on-401 retry use Bearer tokens", asyn
   assert.equal(result.credentials.accessToken, "NEW_TRAKT_SECRET");
   assert.ok(requests.some((request) => request.auth === "Bearer OLD_TRAKT_SECRET"));
   assert.ok(requests.some((request) => request.auth === "Bearer NEW_TRAKT_SECRET"));
+});
+
+test("provider history clients return stable event IDs and Plex uses event history plus bounded metadata resolution", async () => {
+  traktHistoryPayload = [{ id: 7654, watched_at: "2020-01-01T00:00:00.000Z", movie: { ids: { tmdb: 700 } } }];
+  const trakt = await sync.traktHistory("NEW_TRAKT_SECRET");
+  assert.deepEqual(trakt, [{ tmdb_id: 700, watched_at: "2020-01-01T00:00:00.000Z", event_id: "7654" }]);
+  traktHistoryPayload = [];
+
+  const plex = await sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine");
+  assert.deepEqual(plex.map((item) => [item.tmdb_id, item.event_id]), [
+    [501, "/status/sessions/history/9001"],
+    [502, "/status/sessions/history/9002"],
+  ]);
+  assert.ok(requests.some((request) => request.url.startsWith("/status/sessions/history/all?")));
+  assert.ok(requests.some((request) => request.url === "/library/metadata/502?includeGuids=1"));
+  assert.ok(!requests.some((request) => request.url.includes("/library/sections/")));
+});
+
+test("Plex history is account-scoped and rejects an ambiguous shared-user response", async () => {
+  const normal = plexHistoryPayload;
+  try {
+    plexHistoryPayload = [
+      { historyKey: "a", ratingKey: "501", viewedAt: 1577836800, accountID: 42, Guid: [{ id: "tmdb://501" }] },
+      { historyKey: "b", ratingKey: "501", viewedAt: 1577836860, accountID: 43, Guid: [{ id: "tmdb://501" }] },
+    ];
+    await assert.rejects(
+      () => sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine"),
+      /multiple Plex accounts/i,
+    );
+
+    plexHistoryPayload = [
+      { historyKey: "owner", ratingKey: "501", viewedAt: 1577836800, accountID: 1, Guid: [{ id: "tmdb://501" }] },
+    ];
+    await sync.plexWatchedMovies(origin, "PLEX_SERVER_SECRET", "allowed-machine", { accountId: 1 });
+    assert.ok(requests.some((request) => request.url.includes("accountID=1")));
+  } finally {
+    plexHistoryPayload = normal;
+  }
 });
 
 test("provider schema and connection DTOs contain no credential fields", async () => {
