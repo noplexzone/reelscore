@@ -10,9 +10,12 @@ import { startTestServer, parseCookies, rawSetCookies, cookieHas } from "./helpe
 
 let srv;
 let adminCookie, adminCsrf;
+let db, createSession;
 
 before(async () => {
   srv = await startTestServer();
+  ({ db } = await import("../src/db.js"));
+  ({ createSession } = await import("../src/auth.js"));
 
   // Register the first user (becomes admin after migration bootstrap).
   const r = await fetch(`${srv.base}/api/auth/register`, {
@@ -64,6 +67,21 @@ test("login: response body contains csrf_token and user (no JWT)", async () => {
   assert.ok(!body.jwt, "no jwt field");
   assert.equal(typeof body.csrf_token, "string");
   assert.ok(body.csrf_token.length >= 32, "csrf_token is long enough");
+  assert.equal(r.headers.get("cache-control"), "no-store");
+});
+
+test("session cap keeps only the ten newest active sessions", () => {
+  const id = Number(db.prepare("INSERT INTO users (username,password_hash) VALUES ('sessioncap','hash')").run().lastInsertRowid);
+  for (let i = 0; i < 12; i++) createSession(id, { ip: `192.0.2.${i + 1}` });
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sessions WHERE user_id=?").get(id).c, 10);
+});
+
+test("idle sessions expire after seven days", async () => {
+  const id = Number(db.prepare("INSERT INTO users (username,password_hash) VALUES ('idleuser','hash')").run().lastInsertRowid);
+  const session = createSession(id);
+  db.prepare("UPDATE sessions SET last_seen_at=datetime('now','-8 days') WHERE user_id=?").run(id);
+  const response = await fetch(`${srv.base}/api/me`, { headers: { Cookie: `session=${session.token}` } });
+  assert.equal(response.status, 401);
 });
 
 test("login: self_hosted cookie is NOT Secure (HTTP LAN safe)", async () => {
@@ -201,6 +219,16 @@ test("logout: invalidates session immediately", async () => {
     headers: { Cookie: `session=${token}` },
   });
   assert.equal(afterR.status, 401);
+});
+
+test("logout requires authentication and CSRF", async () => {
+  const unauthenticated = await fetch(`${srv.base}/api/auth/logout`, { method: "POST" });
+  assert.equal(unauthenticated.status, 401);
+  const missingCsrf = await fetch(`${srv.base}/api/auth/logout`, {
+    method: "POST",
+    headers: { Cookie: `session=${adminCookie}` },
+  });
+  assert.equal(missingCsrf.status, 403);
 });
 
 // ---------------------------------------------------------------------------

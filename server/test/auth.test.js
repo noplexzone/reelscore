@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 
 // Dynamic imports so DATA_DIR is resolved before db.js evaluates.
 const { db } = await import("../src/db.js");
-const { requireAuth, requireCsrf, createSession, sha256 } = await import(
+const { requireAuth, requireCsrf, createSession, sessionTokenHash } = await import(
   "../src/auth.js"
 );
 
@@ -76,7 +76,7 @@ test("requireAuth: accepts valid session cookie and populates req.user", () => {
   assert.equal(req.user.id, userId);
   assert.equal(req.user.username, "authtest");
   assert.ok(req.sessionData.csrfToken, "csrfToken populated");
-  assert.equal(req.sessionData.tokenHash, sha256(token));
+  assert.equal(req.sessionData.tokenHash, sessionTokenHash(token));
 });
 
 // ---------------------------------------------------------------------------

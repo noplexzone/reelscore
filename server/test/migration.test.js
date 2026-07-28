@@ -220,7 +220,14 @@ test("migration: watches have provider event scope and reconciliation preview sc
   assert.ok(db.prepare("SELECT version FROM schema_versions WHERE version=3").get());
 });
 
-test("backup includes committed WAL rows when a reader prevents checkpointing", () => {
+test("migration: sessions gain idle tracking and bootstrap state is durable", () => {
+  const columns = db.prepare("PRAGMA table_info(sessions)").all().map((row) => row.name);
+  assert.ok(columns.includes("last_seen_at"));
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings'").get());
+  assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=4").get());
+});
+
+test("backup includes committed WAL rows when a reader prevents checkpointing", async () => {
   const reader = new Database(DB_PATH);
   reader.pragma("journal_mode = WAL");
   reader.exec("BEGIN");

@@ -100,7 +100,9 @@ test("hosted: /register returns 403 (closed)", async () => {
     SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
     CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
     PLEX_ALLOWED_SERVER_ID: "allowed-machine",
+    PLEX_ALLOWED_ORIGINS: "https://plex.example.com:32400",
     PLEX_CLIENT_IDENTIFIER: "reelscore-test",
+    TRUSTED_PROXY_CIDRS: "172.29.0.2/32",
     PUBLIC_URL: "https://test.example.com",
   });
   assert.equal(cfg.IS_HOSTED, true);

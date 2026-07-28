@@ -1,18 +1,22 @@
 import rateLimit from "express-rate-limit";
-import { IS_HOSTED, PUBLIC_URL, TRUST_PROXY } from "../config.js";
+import { BlockList, isIP } from "node:net";
+import { IS_HOSTED, PUBLIC_URL, TRUSTED_PROXY_CIDRS } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Trusted proxy configuration
 // ---------------------------------------------------------------------------
 
 export function configureTrustProxy(app) {
-  // Express's trust proxy setting controls how req.ip is resolved.
-  // We only set it if explicitly configured — never blindly trust arbitrary headers.
-  if (TRUST_PROXY > 0) {
-    app.set("trust proxy", TRUST_PROXY);
-  } else {
-    app.set("trust proxy", false);
+  const trusted = new BlockList();
+  for (const cidr of TRUSTED_PROXY_CIDRS) {
+    const [address, prefix] = cidr.split("/");
+    trusted.addSubnet(address, Number(prefix), isIP(address) === 4 ? "ipv4" : "ipv6");
   }
+  app.set("trust proxy", (remoteAddress) => {
+    const address = remoteAddress.startsWith("::ffff:") ? remoteAddress.slice(7) : remoteAddress;
+    const family = isIP(address);
+    return family ? trusted.check(address, family === 4 ? "ipv4" : "ipv6") : false;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -31,14 +35,12 @@ export function validateHostOrigin(req, res, next) {
     return res.status(400).json({ error: "Invalid Host." });
   }
 
-  if (origin) {
-    try {
-      if (new URL(origin).origin !== publicOrigin) {
-        return res.status(403).json({ error: "Invalid Origin." });
-      }
-    } catch {
-      return res.status(403).json({ error: "Invalid Origin." });
-    }
+  const mutation = !["GET", "HEAD", "OPTIONS"].includes(req.method);
+  if (mutation && origin !== publicOrigin) {
+    return res.status(403).json({ error: "Invalid Origin." });
+  }
+  if (origin && origin !== publicOrigin) {
+    return res.status(403).json({ error: "Invalid Origin." });
   }
 
   next();

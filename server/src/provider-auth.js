@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { db } from "./db.js";
-import { createSession, setSessionCookie, sha256, randomHex } from "./auth.js";
+import { createSession, setSessionCookie, sha256, randomHex, SESSION_COOKIE_NAME, sessionTokenHash } from "./auth.js";
 import { IS_HOSTED, PUBLIC_URL, REGISTRATION_MODE, PLEX_ALLOWED_SERVER_ID, PLEX_ALLOWED_ORIGINS } from "./config.js";
 import { decryptJson, encryptJson, plexHeaders, providerJson, validateDiscoveredPlexUri } from "./providers.js";
 
@@ -13,7 +13,14 @@ const TRAKT_WEB_ORIGIN = new URL(process.env.TRAKT_WEB_URL || "https://trakt.tv"
 const FLOW_MS = 10 * 60 * 1000;
 const BROWSER_COOKIE = IS_HOSTED ? "__Host-rs-provider" : "rs_provider";
 const testLoopback = process.env.NODE_ENV === "test";
-const providerPolicy = (origin) => ({ allowedOrigins: [origin], allowedPrivateOrigins: PLEX_ALLOWED_ORIGINS.includes(origin) ? [origin] : [], allowTestLoopback: testLoopback });
+const providerPolicy = (origin, discoveredPlex = false) => {
+  const independentlyAllowed = PLEX_ALLOWED_ORIGINS.includes(origin);
+  return {
+    allowedOrigins: IS_HOSTED && discoveredPlex ? PLEX_ALLOWED_ORIGINS : [origin],
+    allowedPrivateOrigins: independentlyAllowed ? [origin] : [],
+    allowTestLoopback: testLoopback,
+  };
+};
 const flowContext = (flow, provider = flow.provider) => ({ userId: 0, connectionId: `flow:${flow.state_hash}`, provider, field: "flow_secret" });
 export const providerAuthRouter = Router();
 const providerStartLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many provider sign-in attempts." } });
@@ -28,9 +35,9 @@ function browserHash(req, res, create = false) {
   return raw ? sha256(raw) : null;
 }
 function currentSession(req) {
-  const raw = req.cookies?.session;
+  const raw = req.cookies?.[SESSION_COOKIE_NAME];
   if (!raw) return null;
-  return db.prepare(`SELECT s.token_hash,s.csrf_token,u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at > datetime('now') AND u.status='active'`).get(sha256(raw));
+  return db.prepare(`SELECT s.token_hash,s.csrf_token,u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at > datetime('now') AND COALESCE(s.last_seen_at,s.created_at) > datetime('now','-7 days') AND u.status='active'`).get(sessionTokenHash(raw));
 }
 function requireStartCsrf(req, current) {
   if (!current || req.headers["x-csrf-token"] !== current.csrf_token) { const error = new Error("Sign in with a valid CSRF token before linking."); error.status = current ? 403 : 401; throw error; }
@@ -106,7 +113,7 @@ async function finishFlow(flow, provider, identity, credentials, connection, req
 
 async function verifyPlex(origin, token, expectedMachineId) {
   if (!validateDiscoveredPlexUri(origin)) throw new Error("Plex resource URL is invalid.");
-  const identity = await providerJson(`${origin}/identity`, { headers: plexHeaders(token) }, providerPolicy(origin));
+  const identity = await providerJson(`${origin}/identity`, { headers: plexHeaders(token) }, providerPolicy(origin, true));
   const container = identity?.MediaContainer || identity || {};
   const machineId = String(container.machineIdentifier || container.machine_identifier || "");
   if (!machineId || machineId !== expectedMachineId || (PLEX_ALLOWED_SERVER_ID && machineId !== PLEX_ALLOWED_SERVER_ID)) { const error = new Error("Plex server identity does not match the allowed machine."); error.status = 403; throw error; }
@@ -146,7 +153,7 @@ providerAuthRouter.get("/plex/poll", providerFlowLimiter, async (req, res, next)
       const token = resource.accessToken || resource.access_token || pin.authToken;
       for (const candidate of resource.connections || resource.Connection || []) {
         const origin = validateDiscoveredPlexUri(candidate.uri);
-        if (origin && token) servers.push({
+        if (origin && token && (!IS_HOSTED || PLEX_ALLOWED_ORIGINS.includes(origin))) servers.push({
           selectionId: randomHex(16),
           machineId,
           name: resource.name || "Plex Media Server",

@@ -7,6 +7,8 @@ import { authRouter, requireAuth } from "./auth.js";
 import { providerAuthRouter } from "./provider-auth.js";
 import { api } from "./routes/api.js";
 import { admin } from "./routes/admin.js";
+import { DATA_DIR, db, initializeDatabase } from "./db.js";
+import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED } from "./config.js";
 import {
   configureTrustProxy,
   validateHostOrigin,
@@ -17,14 +19,34 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp() {
+  // config.js is evaluated before this explicit first database access. Invalid
+  // hosted configuration therefore cannot create, back up, or migrate a DB.
+  if (IS_HOSTED && !BOOTSTRAP_ADMIN_TOKEN && !fs.existsSync(path.join(DATA_DIR, "reelscore.db"))) {
+    throw new Error("[reelscore] FATAL: BOOTSTRAP_ADMIN_TOKEN is required for a fresh hosted database.");
+  }
+  initializeDatabase();
+  if (IS_HOSTED && !BOOTSTRAP_ADMIN_TOKEN && db.prepare("SELECT COUNT(*) c FROM users").get().c === 0) {
+    throw new Error("[reelscore] FATAL: BOOTSTRAP_ADMIN_TOKEN is required until the first administrator is created.");
+  }
   const app = express();
 
   configureTrustProxy(app);
+
+  app.get("/api/internal/health", (req, res) => {
+    const address = req.socket.remoteAddress || "";
+    if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)) return res.sendStatus(404);
+    return res.set("Cache-Control", "no-store").json({ ok: true });
+  });
 
   app.use(securityHeaders);
   app.use(validateHostOrigin);
   app.use(express.json({ limit: "64kb" }));
   app.use(cookieParser());
+  app.use("/api", (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    res.set("Pragma", "no-cache");
+    next();
+  });
 
   app.get("/api/health", (_req, res) =>
     res.json({ ok: true, tmdb: !!process.env.TMDB_API_KEY })

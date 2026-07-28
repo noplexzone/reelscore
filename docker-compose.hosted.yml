@@ -1,7 +1,7 @@
 services:
-  reelscore:
-    image: noplexzone/reelscore:develop
-    container_name: reelscore
+  reelscore-hosted:
+    image: ${REELSCORE_IMAGE:-noplexzone/reelscore:develop}
+    container_name: reelscore-hosted
     user: "99:100"
     init: true
     read_only: true
@@ -17,30 +17,56 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?required}
       PUBLIC_URL: ${PUBLIC_URL:?required}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
-      TRUST_PROXY: "1"
+      TRUSTED_PROXY_CIDRS: 172.29.0.2/32
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?required}
       CREDENTIAL_ENCRYPTION_KEY_ID: ${CREDENTIAL_ENCRYPTION_KEY_ID:-active}
-      CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: ${CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS:-}
+      CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: ${CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS:-{}}
       PLEX_CLIENT_IDENTIFIER: ${PLEX_CLIENT_IDENTIFIER:?required}
       PLEX_ALLOWED_SERVER_ID: ${PLEX_ALLOWED_SERVER_ID:?required}
-      PLEX_ALLOWED_ORIGINS: ${PLEX_ALLOWED_ORIGINS:-}
+      PLEX_ALLOWED_ORIGINS: ${PLEX_ALLOWED_ORIGINS:?required}
       PLEX_HISTORY_ACCOUNT_ID: ${PLEX_HISTORY_ACCOUNT_ID:-}
       ONBOARDING_PLACEHOLDER_DATE: ${ONBOARDING_PLACEHOLDER_DATE:-}
       TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID:-}
       TRAKT_CLIENT_SECRET: ${TRAKT_CLIENT_SECRET:-}
     volumes:
-      - /mnt/user/appdata/reelscore:/data
+      - ${HOSTED_DATA_DIR:?required}:/data
     networks:
-      - reelscore-tunnel
+      reelscore-app:
+        ipv4_address: 172.29.0.3
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/internal/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
 
+  cloudflared-hosted:
+    image: cloudflare/cloudflared:latest
+    container_name: reelscore-hosted-cloudflared
+    command: tunnel --no-autoupdate run --token-file /run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    depends_on:
+      reelscore-hosted:
+        condition: service_healthy
+    networks:
+      reelscore-app:
+        ipv4_address: 172.29.0.2
+      tunnel-egress: {}
+    restart: unless-stopped
+
 networks:
-  reelscore-tunnel:
-    name: reelscore-tunnel
+  reelscore-app:
+    name: reelscore-hosted-app
     internal: true
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+  tunnel-egress:
+    name: reelscore-hosted-egress
+
+secrets:
+  cloudflare_tunnel_token:
+    file: ${CLOUDFLARE_TUNNEL_TOKEN_FILE:?required}

@@ -1,11 +1,13 @@
 import bcrypt from "bcryptjs";
-import { createHash, randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { db } from "./db.js";
-import { IS_HOSTED, REGISTRATION_MODE } from "./config.js";
+import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED, REGISTRATION_MODE, SESSION_SECRET } from "./config.js";
 
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MAX_ACTIVE_SESSIONS = 10;
+export const SESSION_COOKIE_NAME = IS_HOSTED ? "__Host-reelscore-session" : "session";
 
 export function randomHex(bytes = 32) {
   return randomBytes(bytes).toString("hex");
@@ -15,12 +17,16 @@ export function sha256(token) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+export function sessionTokenHash(token) {
+  return createHmac("sha256", SESSION_SECRET).update(token).digest("hex");
+}
+
 // ---------------------------------------------------------------------------
 // Cookie helpers
 // ---------------------------------------------------------------------------
 
 export function setSessionCookie(res, token) {
-  res.cookie("session", token, {
+  res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
@@ -30,7 +36,7 @@ export function setSessionCookie(res, token) {
 }
 
 export function clearSessionCookie(res) {
-  res.clearCookie("session", { httpOnly: true, sameSite: "lax", path: "/" });
+  res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: "lax", path: "/", secure: IS_HOSTED });
 }
 
 // ---------------------------------------------------------------------------
@@ -40,13 +46,16 @@ export function clearSessionCookie(res) {
 export function createSession(userId, { ip = null, userAgent = null } = {}) {
   const token = randomHex(32);
   const csrfToken = randomHex(32);
-  const tokenHash = sha256(token);
+  const tokenHash = sessionTokenHash(token);
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
 
   db.prepare(
-    `INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, ip, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, ip, user_agent, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
   ).run(tokenHash, userId, csrfToken, expiresAt, ip, userAgent);
+  db.prepare(`DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN (
+    SELECT token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?
+  )`).run(userId, userId, MAX_ACTIVE_SESSIONS);
 
   return { token, csrfToken };
 }
@@ -156,6 +165,35 @@ authRouter.post("/register", authLimiter, async (req, res) => {
   });
 });
 
+authRouter.post("/bootstrap", authLimiter, async (req, res) => {
+  if (!IS_HOSTED || !BOOTSTRAP_ADMIN_TOKEN) return res.sendStatus(404);
+  const supplied = String(req.headers["x-bootstrap-token"] || "");
+  const expectedHash = Buffer.from(sha256(BOOTSTRAP_ADMIN_TOKEN), "hex");
+  const suppliedHash = Buffer.from(sha256(supplied), "hex");
+  if (!timingSafeEqual(expectedHash, suppliedHash)) return res.status(403).json({ error: "Invalid bootstrap token." });
+  const { username, password } = req.body || {};
+  if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) return res.status(400).json({ error: "Username must be 3-20 characters (letters, numbers, _)." });
+  if (!password || password.length < 12) return res.status(400).json({ error: "Bootstrap password must be at least 12 characters." });
+  const passwordHash = await bcrypt.hash(password, 10);
+  let userId;
+  try {
+    userId = db.transaction(() => {
+      const consumed = db.prepare("SELECT value FROM app_settings WHERE key='bootstrap_admin_consumed'").get();
+      const userCount = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+      if (consumed || userCount !== 0) throw Object.assign(new Error("Bootstrap is permanently unavailable."), { status: 409 });
+      const id = Number(db.prepare("INSERT INTO users (username,password_hash,role) VALUES (?,?,'admin')").run(username, passwordHash).lastInsertRowid);
+      db.prepare("INSERT INTO app_settings (key,value) VALUES ('bootstrap_admin_consumed','1')").run();
+      return id;
+    })();
+  } catch (error) {
+    const status = error.status || (String(error.message).includes("UNIQUE") ? 409 : 500);
+    return res.status(status).json({ error: error.status ? error.message : "Bootstrap failed." });
+  }
+  const { token, csrfToken } = createSession(userId, { ip: req.ip, userAgent: req.headers["user-agent"] || null });
+  setSessionCookie(res, token);
+  return res.json({ csrf_token: csrfToken, user: { id: userId, username, role: "admin" } });
+});
+
 authRouter.post("/login", authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username || "");
@@ -179,11 +217,10 @@ authRouter.post("/login", authLimiter, async (req, res) => {
   });
 });
 
-authRouter.post("/logout", (req, res) => {
-  const token = req.cookies?.session;
+authRouter.post("/logout", requireAuth, requireCsrf, (req, res) => {
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (token) {
-    const tokenHash = sha256(token);
-    deleteSession(tokenHash);
+    deleteSession(sessionTokenHash(token));
   }
   clearSessionCookie(res);
   res.json({ ok: true });
@@ -202,17 +239,18 @@ authRouter.get("/me", requireAuth, (req, res) => {
 // ---------------------------------------------------------------------------
 
 export function requireAuth(req, res, next) {
-  const token = req.cookies?.session;
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.status(401).json({ error: "Sign in to continue." });
 
-  const tokenHash = sha256(token);
+  const tokenHash = sessionTokenHash(token);
   const session = db
     .prepare(
-      `SELECT s.token_hash, s.csrf_token, s.expires_at,
+      `SELECT s.token_hash, s.csrf_token, s.expires_at, s.last_seen_at,
               u.id, u.username, u.role, u.status
        FROM sessions s
        JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > datetime('now')`
+       WHERE s.token_hash = ? AND s.expires_at > datetime('now')
+         AND COALESCE(s.last_seen_at,s.created_at) > datetime('now', '-7 days')`
     )
     .get(tokenHash);
 
@@ -222,6 +260,7 @@ export function requireAuth(req, res, next) {
     clearSessionCookie(res);
     return res.status(403).json({ error: "This account is disabled." });
   }
+  db.prepare("UPDATE sessions SET last_seen_at=datetime('now') WHERE token_hash=? AND COALESCE(last_seen_at,created_at) < datetime('now','-5 minutes')").run(tokenHash);
 
   req.user = {
     id: session.id,

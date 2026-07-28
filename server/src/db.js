@@ -3,13 +3,44 @@ import fs from "fs";
 import path from "path";
 
 export const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), "data");
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
 const DB_PATH = path.join(DATA_DIR, "reelscore.db");
+let rawDb = null;
+let initialized = false;
+let initializing = false;
 
-export const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+function openDatabase() {
+  if (!rawDb) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    rawDb = new Database(DB_PATH);
+    rawDb.pragma("journal_mode = WAL");
+    rawDb.pragma("foreign_keys = ON");
+  }
+  return rawDb;
+}
+
+export function initializeDatabase() {
+  const instance = openDatabase();
+  if (!initialized && !initializing) {
+    initializing = true;
+    try {
+      runMigrations();
+      initialized = true;
+    } finally {
+      initializing = false;
+    }
+  }
+  return instance;
+}
+
+// Existing modules retain the db API, while opening and migration remain lazy
+// until config.js has validated the complete environment.
+export const db = new Proxy({}, {
+  get(_target, property) {
+    const instance = initializing ? openDatabase() : initializeDatabase();
+    const value = instance[property];
+    return typeof value === "function" ? value.bind(instance) : value;
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -289,12 +320,25 @@ function migration3() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (3)").run();
 }
 
+function migration4() {
+  if (!columnExists("sessions", "last_seen_at")) db.exec(`ALTER TABLE sessions ADD COLUMN last_seen_at TEXT`);
+  db.exec(`
+    UPDATE sessions SET last_seen_at=COALESCE(last_seen_at,created_at);
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (4)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
 export function runMigrations({ skipBackup = false } = {}) {
-  const latestVersion = 3;
+  const latestVersion = 4;
   const appliedBefore = tableExists("schema_versions")
     ? new Set(db.prepare("SELECT version FROM schema_versions").all().map((row) => row.version))
     : new Set();
@@ -302,7 +346,7 @@ export function runMigrations({ skipBackup = false } = {}) {
   if (highestVersion > latestVersion) {
     throw new Error(`[reelscore] Database schema version ${highestVersion} is newer than this build supports (${latestVersion}).`);
   }
-  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2) || !appliedBefore.has(3);
+  const hasPendingMigration = !appliedBefore.has(1) || !appliedBefore.has(2) || !appliedBefore.has(3) || !appliedBefore.has(4);
 
   // Back up any non-empty database before every pending schema migration,
   // including upgrades between versioned schemas.
@@ -340,6 +384,9 @@ export function runMigrations({ skipBackup = false } = {}) {
   if (!applied.has(3)) {
     db.transaction(migration3)();
   }
+  if (!applied.has(4)) {
+    db.transaction(migration4)();
+  }
 
   if (process.env.APP_MODE === "hosted") {
     const plaintext = db.prepare(`SELECT COUNT(*) c FROM connections
@@ -353,8 +400,6 @@ export function runMigrations({ skipBackup = false } = {}) {
   return { backup };
 }
 
-// Run migrations automatically on module load.
-runMigrations();
 
 // ---------------------------------------------------------------------------
 // Query helpers

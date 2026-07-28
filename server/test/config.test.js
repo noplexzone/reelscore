@@ -11,7 +11,7 @@ test("self_hosted: no secrets required in dev env", () => {
   const cfg = validateConfig({ APP_MODE: "self_hosted", NODE_ENV: "development" });
   assert.equal(cfg.IS_HOSTED, false);
   assert.equal(cfg.REGISTRATION_MODE, "open");
-  assert.equal(cfg.TRUST_PROXY, 0);
+  assert.deepEqual(cfg.TRUSTED_PROXY_CIDRS, []);
 });
 
 test("self_hosted: SESSION_SECRET required in test env", () => {
@@ -68,7 +68,9 @@ const hosted = (overrides = {}) => ({
   SESSION_SECRET: "test-secret-that-is-at-least-32-chars-long",
   CREDENTIAL_ENCRYPTION_KEY: "different-provider-key-that-is-at-least-32-chars",
   PLEX_ALLOWED_SERVER_ID: "allowed-machine",
+  PLEX_ALLOWED_ORIGINS: "https://plex.example.com:32400",
   PLEX_CLIENT_IDENTIFIER: "reelscore-test",
+  TRUSTED_PROXY_CIDRS: "172.29.0.2/32",
   PUBLIC_URL: "https://example.com",
   ...overrides,
 });
@@ -117,18 +119,26 @@ test("hosted: non-http PUBLIC_URL throws", () => {
   );
 });
 
-test("hosted: negative TRUST_PROXY throws", () => {
+test("hosted: malformed trusted proxy CIDR throws", () => {
   assert.throws(
-    () => validateConfig(hosted({ TRUST_PROXY: "-1" })),
-    /TRUST_PROXY/
+    () => validateConfig(hosted({ TRUSTED_PROXY_CIDRS: "172.29.0.2/-1" })),
+    /TRUSTED_PROXY_CIDRS/
   );
 });
 
-test("hosted: non-numeric TRUST_PROXY throws", () => {
+test("hosted: missing trusted proxy CIDR throws", () => {
   assert.throws(
-    () => validateConfig(hosted({ TRUST_PROXY: "cloudflare" })),
-    /TRUST_PROXY/
+    () => validateConfig(hosted({ TRUSTED_PROXY_CIDRS: undefined })),
+    /TRUSTED_PROXY_CIDRS/
   );
+});
+
+test("hosted: exact Plex origin allowlist is required", () => {
+  assert.throws(() => validateConfig(hosted({ PLEX_ALLOWED_ORIGINS: undefined })), /PLEX_ALLOWED_ORIGINS/);
+});
+
+test("hosted: short bootstrap token is rejected", () => {
+  assert.throws(() => validateConfig(hosted({ BOOTSTRAP_ADMIN_TOKEN: "short" })), /BOOTSTRAP_ADMIN_TOKEN/);
 });
 
 test("hosted: missing Plex client identifier throws", () => {
@@ -150,11 +160,11 @@ test("hosted: valid config succeeds", () => {
   const cfg = validateConfig(hosted({
     PUBLIC_URL: "https://app.example.com",
     REGISTRATION_MODE: "invite",
-    TRUST_PROXY: "1",
+    TRUSTED_PROXY_CIDRS: "172.29.0.2/32",
   }));
   assert.equal(cfg.IS_HOSTED, true);
   assert.equal(cfg.REGISTRATION_MODE, "invite");
-  assert.equal(cfg.TRUST_PROXY, 1);
+  assert.deepEqual(cfg.TRUSTED_PROXY_CIDRS, ["172.29.0.2/32"]);
   assert.equal(cfg.PUBLIC_URL, "https://app.example.com");
 });
 
