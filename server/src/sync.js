@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.js";
 import { watchPoints } from "./scoring.js";
 import { providerJson, safeProviderFetch, plexHeaders } from "./providers.js";
-import { PLEX_ALLOWED_ORIGINS } from "./config.js";
+import { IS_HOSTED, PLEX_ALLOWED_ORIGINS } from "./config.js";
 
 const normalizeWatchedAt = (value) => new Date(String(value).replace(" ", "T") + (String(value).includes("Z") || /[+-]\d\d:\d\d$/.test(String(value)) ? "" : "Z")).toISOString().replace("T", " ").slice(0, 19);
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
@@ -106,7 +106,11 @@ const TRAKT_BASE = process.env.TRAKT_BASE_URL || "https://api.trakt.tv";
 export const TRAKT_CLIENT_ID = process.env.TRAKT_CLIENT_ID || "";
 const TRAKT_CLIENT_SECRET = process.env.TRAKT_CLIENT_SECRET || "";
 const testLoopback = process.env.NODE_ENV === "test";
-const policy = (origin, plex = false) => ({ allowedOrigins: [origin], allowedPrivateOrigins: plex && PLEX_ALLOWED_ORIGINS.includes(origin) ? [origin] : [], allowTestLoopback: testLoopback });
+const policy = (origin, plex = false) => ({
+  allowedOrigins: plex && IS_HOSTED ? PLEX_ALLOWED_ORIGINS : [origin],
+  allowedPrivateOrigins: plex && PLEX_ALLOWED_ORIGINS.includes(origin) ? [origin] : [],
+  allowTestLoopback: testLoopback,
+});
 export const traktConfigured = () => !!(TRAKT_CLIENT_ID && TRAKT_CLIENT_SECRET);
 function traktHeaders(token) { return { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "trakt-api-version": "2", "trakt-api-key": TRAKT_CLIENT_ID }; }
 async function traktPost(path, body) { return providerJson(TRAKT_BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, policy(new URL(TRAKT_BASE).origin)); }

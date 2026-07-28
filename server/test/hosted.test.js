@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 
-let server, base, db, app;
+let server, base, db, app, plexValidate;
 const publicHeaders = { Host: "hosted.example.test", Origin: "https://hosted.example.test" };
 
 function rawRequest(pathname, { method = "GET", headers = {}, body = null } = {}) {
@@ -41,6 +41,7 @@ function rawRequest(pathname, { method = "GET", headers = {}, body = null } = {}
 before(async () => {
   ({ createApp: app } = await import("../src/index.js"));
   ({ db } = await import("../src/db.js"));
+  ({ plexValidate } = await import("../src/sync.js"));
   const expressApp = app();
   const trust = expressApp.get("trust proxy fn");
   assert.equal(trust("127.0.0.1"), false);
@@ -72,6 +73,21 @@ test("hosted mutations require the exact serialized Origin", async () => {
     method: "POST", headers: { Host: "hosted.example.test", Origin: "https://hosted.example.test/", "content-type": "application/json", "x-bootstrap-token": process.env.BOOTSTRAP_ADMIN_TOKEN }, body: "{}",
   });
   assert.equal(normalizedButNotExact.status, 403);
+});
+
+test("hosted sync rejects an unconfigured Plex origin before sending credentials", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls++; throw new Error("must not be called"); };
+  try {
+    await assert.rejects(
+      plexValidate("https://attacker.example.test:32400", "credential-sentinel", "allowed-machine"),
+      /Provider URL is not allowed/i,
+    );
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("first admin bootstrap is one-use and issues a secure __Host cookie", async () => {
