@@ -4,6 +4,7 @@ import { curatedPerson, filterFilmography, personBonus } from "../people.js";
 import { awardScoreEvent, reverseScoreEvents } from "../repositories/score-ledger.js";
 import { softDeleteWatch } from "../repositories/watch-repository.js";
 import { reconcileMovieEligibility } from "./scoring-service.js";
+import { reconcilePendingDuplicatesAfterWatchDeletion } from "./duplicate-state-service.js";
 import { VOLUME_TIERS, GENRE_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
 
 export const ACHIEVEMENT_RULE_VERSION = "competitive-achievement-v1";
@@ -100,7 +101,7 @@ function genreRule(genre, count, tier) {
   };
 }
 
-async function externalRules(userId, { collectionIds, personIds }) {
+async function externalRules(userId, { collectionIds, personIds, requireExternalSuccess = false }) {
   const existing = db.prepare("SELECT key FROM achievements WHERE user_id=?").all(userId).map((row) => row.key);
   const collections = new Set(collectionIds);
   const people = new Set(personIds);
@@ -129,6 +130,11 @@ async function externalRules(userId, { collectionIds, personIds }) {
         metadata: { rule: "series", collection_id: collectionId, required_tmdb_ids: requiredIds },
       });
     } catch {
+      if (requireExternalSuccess) {
+        const error = new Error("Achievement metadata is temporarily unavailable.");
+        error.status = 502;
+        throw error;
+      }
       // Unknown external basis is intentionally omitted so an outage cannot revoke a trophy.
     }
   }
@@ -151,6 +157,11 @@ async function externalRules(userId, { collectionIds, personIds }) {
         metadata: { rule: "filmography", person_id: personId, role: curated.role, required_tmdb_ids: requiredIds },
       });
     } catch {
+      if (requireExternalSuccess) {
+        const error = new Error("Achievement metadata is temporarily unavailable.");
+        error.status = 502;
+        throw error;
+      }
       // Unknown external basis is intentionally omitted so an outage cannot revoke a trophy.
     }
   }
@@ -225,12 +236,13 @@ export function prepareStaticAchievementReconciliation(userId) {
   return Object.freeze({ [PREPARED_RECONCILIATION]: true, userId: uid, fetched: Object.freeze([]) });
 }
 
-export async function prepareAchievementReconciliation(userId, { collectionIds = [], personIds = [] } = {}) {
+export async function prepareAchievementReconciliation(userId, { collectionIds = [], personIds = [], requireExternalSuccess = false } = {}) {
   const uid = positiveId(userId, "userId");
   if (!Array.isArray(collectionIds) || !Array.isArray(personIds)) throw new TypeError("collectionIds and personIds must be arrays.");
+  if (typeof requireExternalSuccess !== "boolean") throw new TypeError("requireExternalSuccess must be a boolean.");
   const normalizedCollections = [...new Set(collectionIds.map((id) => positiveId(id, "collectionId")))];
   const normalizedPeople = [...new Set(personIds.map((id) => positiveId(id, "personId")))];
-  const fetched = await externalRules(uid, { collectionIds: normalizedCollections, personIds: normalizedPeople });
+  const fetched = await externalRules(uid, { collectionIds: normalizedCollections, personIds: normalizedPeople, requireExternalSuccess });
   return Object.freeze({ [PREPARED_RECONCILIATION]: true, userId: uid, fetched });
 }
 
@@ -271,7 +283,8 @@ export async function deleteWatchAndReconcileAchievements(userId, watchId) {
     if (!current || (current.deleted_at != null && current.deleted_reason !== "user_deleted")) return null;
     const deleted = current.deleted_at == null ? softDeleteWatch(uid, wid) : current;
     if (!deleted) return null;
-    reconcileMovieEligibility(uid, [deleted.tmdb_id]);
+    const duplicateMovies = reconcilePendingDuplicatesAfterWatchDeletion(uid, wid);
+    reconcileMovieEligibility(uid, [...new Set([deleted.tmdb_id, ...duplicateMovies])]);
     applyPreparedAchievementReconciliation(uid, prepared);
     return deleted;
   }).immediate();

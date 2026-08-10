@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 7 } = {}) {
+export function initializeDatabase({ targetVersion = 8 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -680,12 +680,23 @@ function migration7() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (7)").run();
 }
 
+
+function migration8() {
+  if (!columnExists("duplicate_cases", "cancelled_at")) db.exec("ALTER TABLE duplicate_cases ADD COLUMN cancelled_at TEXT");
+  if (!columnExists("duplicate_cases", "cancellation_reason")) db.exec("ALTER TABLE duplicate_cases ADD COLUMN cancellation_reason TEXT");
+  db.exec(`
+    DROP INDEX IF EXISTS idx_duplicate_cases_pending_fingerprint;
+    CREATE INDEX IF NOT EXISTS idx_duplicate_cases_fingerprint ON duplicate_cases(user_id,fingerprint,status,id);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (8)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 7 } = {}) {
-  const latestVersion = 7;
+export function runMigrations({ skipBackup = false, targetVersion = 8 } = {}) {
+  const latestVersion = 8;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -745,6 +756,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 7 } = {}) {
   }
   if (targetVersion >= 7 && !applied.has(7)) {
     db.transaction(migration7)();
+  }
+  if (targetVersion >= 8 && !applied.has(8)) {
+    db.transaction(migration8)();
   }
 
   if (process.env.APP_MODE === "hosted") {

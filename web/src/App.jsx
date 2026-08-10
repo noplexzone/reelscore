@@ -17,6 +17,7 @@ import Profile from "./pages/Profile.jsx";
 import Actors from "./pages/Actors.jsx";
 import Person from "./pages/Person.jsx";
 import Admin from "./pages/Admin.jsx";
+import Duplicates from "./pages/Duplicates.jsx";
 
 const ToastCtx = createContext(() => {});
 export const useToast = () => useContext(ToastCtx);
@@ -44,7 +45,7 @@ function Nav() {
   return <nav className="nav">
     <ActiveLink to="/" exact className="brand">REEL<em>SCORE</em></ActiveLink>
     <div className="nav-links">
-      <ActiveLink to="/" exact>Home</ActiveLink><ActiveLink to="/search">Search</ActiveLink><ActiveLink to="/actors">Actors</ActiveLink><ActiveLink to="/achievements">Trophies</ActiveLink><ActiveLink to="/friends">Friends</ActiveLink>
+      <ActiveLink to="/" exact>Home</ActiveLink><ActiveLink to="/search">Search</ActiveLink><ActiveLink to="/actors">Actors</ActiveLink><ActiveLink to="/achievements">Trophies</ActiveLink><ActiveLink to="/duplicates">Review</ActiveLink><ActiveLink to="/friends">Friends</ActiveLink>
       {u && <ActiveLink to={`/u/${u.username}`}>Me</ActiveLink>}
       {u && <ActiveLink to="/settings">Settings</ActiveLink>}
       {u && !u.email_verified && <ActiveLink to="/claim-email">Verify email</ActiveLink>}
@@ -84,6 +85,7 @@ export default function App() {
     <Route path="/person/:id"><Protected><Person /></Protected></Route>
     <Route path="/achievements"><Protected><Achievements /></Protected></Route>
     <Route path="/friends"><Protected><Friends /></Protected></Route>
+    <Route path="/duplicates"><Protected><Duplicates /></Protected></Route>
     <Route path="/u/:username"><Protected><Profile /></Protected></Route>
     <Route path="/admin"><Protected admin><Admin /></Protected></Route>
     <Route path="/"><Protected><Home /></Protected></Route>

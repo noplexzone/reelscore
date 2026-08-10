@@ -269,8 +269,18 @@ test("migration 7: creates ledger and duplicate-review tables with foreign keys 
   const fkTargets = new Set(db.prepare("PRAGMA foreign_key_list(score_events)").all().map((row) => row.table));
   for (const table of ["users", "watches", "achievements"]) assert.ok(fkTargets.has(table), `FK to ${table}`);
   const indexes = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((row) => row.name));
-  for (const name of ["idx_score_events_user_chronology", "idx_score_events_watch", "idx_score_events_achievement", "idx_watches_competitive_timeline", "idx_watches_streak_day", "idx_duplicate_cases_user_status", "idx_duplicate_cases_pending_fingerprint"]) assert.ok(indexes.has(name), name);
+  for (const name of ["idx_score_events_user_chronology", "idx_score_events_watch", "idx_score_events_achievement", "idx_watches_competitive_timeline", "idx_watches_streak_day", "idx_duplicate_cases_user_status", "idx_duplicate_cases_fingerprint"]) assert.ok(indexes.has(name), name);
   assert.deepEqual(db.pragma("foreign_key_check"), []);
+});
+
+test("migration 8: supports explicit per-candidate cases and cancellation audit", () => {
+  const duplicateColumns = new Set(db.prepare("PRAGMA table_info(duplicate_cases)").all().map((row) => row.name));
+  assert.ok(duplicateColumns.has("cancelled_at"));
+  assert.ok(duplicateColumns.has("cancellation_reason"));
+  assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=8").get());
+  const index = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_duplicate_cases_fingerprint'").get();
+  assert.ok(index);
+  assert.doesNotMatch(index.sql || "", /UNIQUE/i);
 });
 
 test("migration 7: enforces cross-user ledger, achievement, and duplicate ownership", () => {

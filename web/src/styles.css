@@ -342,3 +342,19 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
   .recovery-codes { grid-template-columns: 1fr; }
   .session-row { align-items: flex-start; }
 }
+
+/* ---- Duplicate review ---- */
+.duplicates-page > h1 { font-family: var(--font-display); letter-spacing: .8px; margin-bottom: 4px; }
+.duplicate-list { display: grid; gap: 14px; margin-top: 18px; }
+.duplicate-card { display: grid; gap: 14px; }
+.duplicate-summary { display: flex; align-items: flex-start; gap: 16px; }
+.duplicate-summary > img, .duplicate-summary > .poster-fallback { width: 92px; flex: 0 0 92px; aspect-ratio: 2/3; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.duplicate-summary h2 { margin: 0 0 2px; font-size: 20px; }
+.duplicate-watch { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.duplicate-watch strong { min-width: 66px; }
+.duplicate-watch time { color: var(--dim); font-size: 13px; }
+.duplicate-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+@media (max-width: 520px) {
+  .duplicate-summary > img, .duplicate-summary > .poster-fallback { width: 72px; flex-basis: 72px; }
+  .duplicate-actions .btn { width: 100%; }
+}

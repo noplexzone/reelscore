@@ -28,8 +28,23 @@ search → log → score → achievements → friends.
 
 Link a service on your profile page and import your watch history — synced
 films carry a **verified badge** proving they're really in your service's
-history, unlike manually logged entries. A manual log is upgraded in place if
-the service has the same film on the same day.
+history, unlike manually logged entries. When a newly imported provider event
+matches an active manual entry for the same film and user-local calendar day,
+it is quarantined from points, streaks, seasons, and trophies until the user
+reviews it on the **Review** page. Every matching provider event receives its own
+review case, so resolving one can never release another. The closest manual event
+is selected by UTC time difference, then stable row ID. Provider retries remain
+idempotent.
+
+Duplicate decisions preserve both source rows and provenance: **Merge**
+soft-deletes only the provider candidate and links it to the manual canonical
+entry; **Keep both** applies normal rewatch/cooldown scoring; **Keep separate**
+retains both diary rows but permanently excludes the unverified candidate from
+competition; and **Keep both & ignore future matches** also suppresses future
+cases for that user, film, and local day. Resolutions are atomic and replay-safe.
+Timezone changes rebase fingerprints and scoped ignore rules transactionally. If a
+timezone change or watch deletion removes the active manual/provider pairing, the
+case closes with an explicit cancellation reason and scoring is reconciled.
 
 - **Trakt** — requires the server admin to set `TRAKT_CLIENT_ID` /
   `TRAKT_CLIENT_SECRET` (free app at trakt.tv/oauth/applications). Linking uses

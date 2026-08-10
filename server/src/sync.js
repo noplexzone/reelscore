@@ -3,6 +3,8 @@ import { db } from "./db.js";
 import { reconcileMovieEligibility } from "./services/scoring-service.js";
 import { insertWatch } from "./repositories/watch-repository.js";
 import { localDay, normalizeUtcInstant } from "./time.js";
+import { notablePeopleInMovie } from "./people.js";
+import { detectDuplicateCandidate } from "./services/duplicate-state-service.js";
 import { providerJson, safeProviderFetch, plexHeaders } from "./providers.js";
 import { IS_HOSTED, PLEX_ALLOWED_ORIGINS } from "./config.js";
 
@@ -74,6 +76,9 @@ export async function importHistory(userId, service, items, getMovie, { connecti
         providerEventId: item.provider_event_id,
       });
       if (inserted) {
+        detectDuplicateCandidate(userId, inserted.id, {
+          personIds: notablePeopleInMovie(movie.credits).map((person) => person.id),
+        });
         result.imported++;
       } else result.skipped++;
     }

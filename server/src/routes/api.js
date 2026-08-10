@@ -16,6 +16,7 @@ import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
 import { insertWatch } from "../repositories/watch-repository.js";
 import { currentStreak } from "../services/streak-service.js";
 import { updateUserSettings } from "../services/user-settings-service.js";
+import { duplicates } from "./duplicates.js";
 
 export const api = Router();
 
@@ -28,6 +29,7 @@ api.use((req, res, next) => {
 });
 
 api.use("/connections", connections);
+api.use("/duplicates", duplicates);
 
 function userSummary(u, { includeTimezone = false } = {}) {
   const summary = {

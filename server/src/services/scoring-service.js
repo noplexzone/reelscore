@@ -7,7 +7,7 @@ import { awardScoreEvent, reverseScoreEvents } from "../repositories/score-ledge
 const WATCH_CATEGORIES = ["watch_first", "watch_cooldown", "watch_rewatch"];
 
 function desiredAward(watch, decision) {
-  if (watch.deleted_at != null || decision.eligibility_reason === "duplicate_pending") return null;
+  if (watch.deleted_at != null || ["duplicate_pending", "duplicate_keep_separate"].includes(decision.eligibility_reason)) return null;
   const base = basePoints({ voteAverage: watch.vote_average, runtime: watch.runtime });
   let category;
   let multiplier;
@@ -55,8 +55,10 @@ function reconcileOneMovie(userId, tmdbId) {
     normalize.run(instant, localDay(instant, zone), zone, watch.id);
   }
   const watches = db.prepare(`SELECT w.*,
-      CASE WHEN EXISTS(SELECT 1 FROM duplicate_cases d WHERE d.candidate_watch_id=w.id AND d.status='pending')
-        THEN 'pending' ELSE NULL END duplicate_status
+      CASE
+        WHEN EXISTS(SELECT 1 FROM duplicate_cases d WHERE d.candidate_watch_id=w.id AND d.status='pending') THEN 'pending'
+        WHEN EXISTS(SELECT 1 FROM duplicate_cases d WHERE d.candidate_watch_id=w.id AND d.status='resolved' AND d.resolution='keep_separate' AND d.cancelled_at IS NULL) THEN 'excluded'
+        ELSE NULL END duplicate_status
     FROM watches w WHERE w.user_id=? AND w.tmdb_id=? ORDER BY w.watched_at_utc,w.id`).all(userId, tmdbId);
   if (watches.length === 0) return [];
   const decisions = evaluateWatchEligibility(watches);

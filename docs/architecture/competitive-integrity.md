@@ -54,11 +54,15 @@ Reconciliation is deterministic per `(user_id, tmdb_id)` timeline. A late import
 
 ## Duplicate review contract
 
-`duplicate_cases` stores a durable fingerprint, canonical/candidate watch references, evidence, pending/resolved state, and one of the supported resolutions: `merge`, `keep_both`, `keep_separate`, or `ignore_future_matching`. `duplicate_ignore_rules` is scoped by user and fingerprint. Later services own candidate detection and idempotent resolution; migration 7 only creates the durable schema.
+`duplicate_cases` stores a durable `duplicate-v1:<tmdb_id>:<watched_day_local>` fingerprint, canonical/candidate watch references, evidence snapshots, pending/resolved state, and one supported resolution: `merge`, `keep_both`, `keep_separate`, or `ignore_future_matching`. A newly inserted provider event creates its own case only when an active manual watch exists for the same owner, TMDB film, and user-local day; closest UTC distance then watch ID chooses the canonical manual deterministically. Explicit per-candidate cases ensure that resolving one provider event cannot release another. Detection and score quarantine run inside the provider import transaction before eligibility reconciliation.
+
+`merge` soft-deletes only the candidate as `duplicate_merged`, links it to the manual canonical row, and preserves provider provenance. `keep_both` accepts both events under normal cooldown/rewatch scoring. `keep_separate` retains both diary rows but permanently excludes the candidate from competitive eligibility. `ignore_future_matching` accepts the current pair normally and adds a `duplicate_ignore_rules` row scoped to the exact user and fingerprint. Resolution, eligibility/ledger repair, and prepared achievement application share one immediate transaction; same-action retries are reads, conflicting retries return a conflict.
+
+Timezone changes transactionally recompute fingerprints and evidence from immutable UTC instants, migrate exact ignore rules, reassign pending cases to the deterministic active manual when possible, and otherwise close them with an auditable cancellation reason before repairing eligibility. Deleting either side of a pending case follows the same rule: reassign when an active manual remains, otherwise close the case and release or retain the candidate according to its actual deletion state. Migration 8 replaces fingerprint-level pending uniqueness with explicit per-candidate indexing and adds cancellation audit fields.
 
 ## Migration safety and invariants
 
-- Version 7 runs through the existing verified `VACUUM INTO` backup gate for any populated database.
+- Versions 7 and 8 run through the existing verified `VACUUM INTO` backup gate for any populated database.
 - All schema additions are conditional or `IF NOT EXISTS`, and ledger imports use unique identities plus `INSERT OR IGNORE`.
 - Existing users, watches, achievements, relationships, and stored point columns are preserved; the authoritative runtime total moves from mutable projections to the equivalent ledger sum.
 - Foreign keys protect user/watch/achievement references; indexes support active user totals, source award lookup, pending duplicate queues, and ignore-rule matching.

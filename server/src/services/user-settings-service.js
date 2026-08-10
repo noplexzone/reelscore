@@ -1,5 +1,7 @@
 import { db } from "../db.js";
 import { assertTimeZone, localDay } from "../time.js";
+import { rebaseDuplicateStateForTimezone } from "./duplicate-state-service.js";
+import { reconcileMovieEligibility } from "./scoring-service.js";
 import {
   applyPreparedAchievementReconciliation,
   prepareStaticAchievementReconciliation,
@@ -60,6 +62,8 @@ export function applyPreparedUserSettingsUpdate(userId, prepared, options = {}) 
       const rows = db.prepare("SELECT id,watched_at_utc FROM watches WHERE user_id=? ORDER BY id").all(uid);
       const updateWatch = db.prepare("UPDATE watches SET watched_day_local=?,timezone_used=? WHERE id=? AND user_id=?");
       for (const row of rows) updateWatch.run(localDay(row.watched_at_utc, update.timezone), update.timezone, row.id, uid);
+      const affectedMovies = rebaseDuplicateStateForTimezone(uid);
+      if (affectedMovies.length) reconcileMovieEligibility(uid, affectedMovies);
       applyPreparedAchievementReconciliation(uid, preparedAchievements);
     }
     const current = db.prepare("SELECT public_profile,timezone FROM users WHERE id=?").get(uid);

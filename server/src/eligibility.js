@@ -40,6 +40,7 @@ export function evaluateWatchEligibility(events, { cooldownDays = REWATCH_COOLDO
 
     if (event.deleted_at != null) return result(event, canonicalId, none, "deleted");
     if (event.duplicate_status === "pending") return result(event, canonicalId, none, "duplicate_pending");
+    if (event.duplicate_status === "excluded") return result(event, canonicalId, none, "duplicate_keep_separate");
 
     if (!prior) {
       state.set(key, { canonicalId: event.id, lastWatchTime: event.__time });

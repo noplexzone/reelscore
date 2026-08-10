@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Duplicate review workflow for same-user/manual-provider same-film local-day imports, with explicit per-provider cases, pending score quarantine, ownership-scoped API, atomic/idempotent merge and keep resolutions, timezone-safe scoped ignore rules, audited deletion/timezone cancellations, and a direct Review UI.
 - User-selectable IANA timezones in account settings, with browser-zone detection and private `/api/me` exposure.
 - Competitive-integrity migration 7 with timezone-normalized watch chronology, explicit versioned eligibility, an idempotent legacy score-ledger backfill, reversible-achievement references, and duplicate-review schema; plus pure IANA time and qualifying-watch policy primitives.
 - Competitive-integrity architecture and phased implementation plan covering qualifying watches, an explainable/reversible score ledger, timezone-aware streaks, duplicate review, seasons, leagues, challenges, and later quality work.
