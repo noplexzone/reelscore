@@ -5,7 +5,8 @@ process.env.NODE_ENV = "test";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { db, currentStreak } = await import("../src/db.js");
+const { db } = await import("../src/db.js");
+const { currentStreak } = await import("../src/services/streak-service.js");
 const { awardScoreEvent, reverseScoreEvents, scoreBreakdown, totalScore } = await import("../src/repositories/score-ledger.js");
 const { reconcileMovieEligibility, scoreWatchEvent } = await import("../src/services/scoring-service.js");
 const { evaluate, progress } = await import("../src/achievements.js");
@@ -19,8 +20,8 @@ function insertWatch(userId, { tmdbId = 42, title = `Film ${tmdbId}`, voteAverag
   const watched = watchedAt.replace("T", " ").replace(".000Z", "");
   return Number(db.prepare(`INSERT INTO watches
     (user_id,tmdb_id,title,vote_average,runtime,points,is_rewatch,source,watched_at,
-     watched_at_utc,watched_day_local,timezone_used)
-    VALUES (?,?,?,?,?,0,0,'manual',?,?,substr(?,1,10),'UTC')`)
+     watched_at_utc,watched_day_local,timezone_used,qualifies_for_streak)
+    VALUES (?,?,?,?,?,0,0,'manual',?,?,substr(?,1,10),'UTC',1)`)
     .run(userId, tmdbId, title, voteAverage, runtime, watched, watchedAt, watchedAt).lastInsertRowid);
 }
 

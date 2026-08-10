@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, watchCount, currentStreak } from "../db.js";
+import { db, watchCount } from "../db.js";
 import { requireCsrf } from "../auth.js";
 import {
   searchMovies, movieDetails, collectionDetails, trendingMovies,
@@ -14,6 +14,8 @@ import { scoreWatchEvent, reconcileMovieEligibility } from "../services/scoring-
 import { deleteWatchAndReconcileAchievements } from "../services/achievement-service.js";
 import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
 import { insertWatch } from "../repositories/watch-repository.js";
+import { currentStreak } from "../services/streak-service.js";
+import { updateUserSettings } from "../services/user-settings-service.js";
 
 export const api = Router();
 
@@ -27,8 +29,8 @@ api.use((req, res, next) => {
 
 api.use("/connections", connections);
 
-function userSummary(u) {
-  return {
+function userSummary(u, { includeTimezone = false } = {}) {
+  const summary = {
     id: u.id,
     username: u.username,
     score: totalScore(u.id),
@@ -37,18 +39,22 @@ function userSummary(u) {
     streak: currentStreak(u.id),
     public_profile: !!u.public_profile,
   };
+  if (includeTimezone) summary.timezone = u.timezone;
+  return summary;
 }
 
 // ---- Me -----------------------------------------------------------------
 api.get("/me", (req, res) => {
   const u = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
-  res.json(userSummary(u));
+  res.json(userSummary(u, { includeTimezone: true }));
 });
 
-api.post("/me/settings", (req, res) => {
-  const pub = req.body?.public_profile ? 1 : 0;
-  db.prepare("UPDATE users SET public_profile = ? WHERE id = ?").run(pub, req.user.id);
-  res.json({ public_profile: !!pub });
+api.post("/me/settings", async (req, res, next) => {
+  try {
+    res.json(await updateUserSettings(req.user.id, req.body));
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ---- Home dashboard -----------------------------------------------------

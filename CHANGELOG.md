@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- User-selectable IANA timezones in account settings, with browser-zone detection and private `/api/me` exposure.
 - Competitive-integrity migration 7 with timezone-normalized watch chronology, explicit versioned eligibility, an idempotent legacy score-ledger backfill, reversible-achievement references, and duplicate-review schema; plus pure IANA time and qualifying-watch policy primitives.
 - Competitive-integrity architecture and phased implementation plan covering qualifying watches, an explainable/reversible score ledger, timezone-aware streaks, duplicate review, seasons, leagues, challenges, and later quality work.
 - Optional authenticator-app TOTP MFA with one-use recovery codes, MFA-aware sign-in, administrator MFA safeguards, and account settings for enrollment, recovery-code rotation, MFA disable, and active-session revocation.
@@ -27,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Daily runtime cap on logging watches (26 runtime-hours per calendar day). New users typically log their entire watch history on first login, which the cap blocked with a 429.
 
 ### Changed
+- Current profile streaks now use distinct qualifying, non-deleted local watch days in each user's timezone. Changing timezone transactionally re-derives historical local days from immutable UTC instants and reconciles static achievement bases without resetting profile visibility.
 - Achievement progress now uses qualifying unique watches. Awards are ledger-backed and reversible: loss of basis retains a revoked trophy record with a compensating score event, while later re-qualification appends a new award generation.
 - Lifetime scoring now reads from the append-oriented score ledger. Manual and imported watches are scored atomically with explicit first-watch, cooldown, and rewatch explanations; corrections use compensating reversals; watch deletion is a reversible soft delete; and provider reconciliation preserves source-event provenance.
 - Acceptance/CI image updated to `noplexzone/reelscore:develop`. Stable semver tags and `latest` are reserved for future promoted releases.

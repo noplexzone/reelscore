@@ -220,6 +220,11 @@ function applyRule(userId, rule, now) {
   return current;
 }
 
+export function prepareStaticAchievementReconciliation(userId) {
+  const uid = positiveId(userId, "userId");
+  return Object.freeze({ [PREPARED_RECONCILIATION]: true, userId: uid, fetched: Object.freeze([]) });
+}
+
 export async function prepareAchievementReconciliation(userId, { collectionIds = [], personIds = [] } = {}) {
   const uid = positiveId(userId, "userId");
   if (!Array.isArray(collectionIds) || !Array.isArray(personIds)) throw new TypeError("collectionIds and personIds must be arrays.");

@@ -14,7 +14,7 @@ Canonical watch time consists of:
 - `watched_day_local`: the `YYYY-MM-DD` calendar day derived at ingestion;
 - `timezone_used`: the valid IANA timezone used for that derivation.
 
-Migration 7 interprets legacy timezone-free timestamps as UTC, sets `timezone_used` to `UTC`, derives the local day without consulting TMDB, and applies the same 30-day eligibility policy under the provenance version `competition-v1-backfill`. Future timezone changes apply only to future events. `server/src/time.js` validates IANA names through `Intl.DateTimeFormat` and derives calendar dates with formatted calendar parts, rather than fixed-hour arithmetic, so midnight and DST changes are handled by the runtime timezone database.
+Migration 7 interprets legacy timezone-free timestamps as UTC, sets `timezone_used` to `UTC`, derives the local day without consulting TMDB, and applies the same 30-day eligibility policy under the provenance version `competition-v1-backfill`. A user timezone change transactionally re-derives every owned watch's local day from immutable `watched_at_utc`, preserves source identity and timestamps, and reconciles static achievement bases. `server/src/time.js` validates IANA names through `Intl.DateTimeFormat` and derives calendar dates with formatted calendar parts, rather than fixed-hour arithmetic, so midnight and DST changes are handled by the runtime timezone database.
 
 ## Versioned eligibility
 
@@ -44,11 +44,13 @@ Achievement progress is derived from unique watches where `qualifies_for_achieve
 
 Achievement rows are durable state records. Losing the only qualifying basis retains the row, sets `revoked_at` and `revocation_reason`, marks the active award reversed, and appends one compensating ledger event. Re-qualification clears revocation state and appends a new generation award without editing prior history. Active migrated awards remain in place while deserved. Series and filmography requirements are fetched before the short write transaction; a failed external lookup preserves existing state rather than causing a false revocation.
 
+Current streaks are a separate projection over distinct `watched_day_local` values where `qualifies_for_streak=1 AND deleted_at IS NULL`. The run may begin on the user's local today or yesterday and then decrements calendar dates, avoiding fixed elapsed-hour assumptions across DST. Only the private `GET /api/me` response exposes the user's timezone; social and public profile summaries do not.
+
 ## Runtime watch reconciliation
 
 Manual logging and provider imports insert the immutable watch record, derive local-day fields, evaluate eligibility, and append the award in one SQLite transaction. First watches, cooldown rewatches, and paid rewatches receive distinct categories, including zero-point explanatory events whose metadata snapshots the stored rating, runtime, timestamp, source, calculation, and reason.
 
-Reconciliation is deterministic per `(user_id, tmdb_id)` timeline. A late import, duplicate-pending transition, or soft deletion sets the prior award's `reversed_at`, appends one idempotent negative compensating event, and issues a replacement only when required. Unchanged `legacy-v1` awards retain their historical stored values even when the current formula would differ. Deleted events remain in history, are excluded from read projections, and no longer affect watch points or the interim UTC streak calculation. Placeholder reconciliation retains the provider event as a soft-deleted provenance row linked to the surviving canonical watch.
+Reconciliation is deterministic per `(user_id, tmdb_id)` timeline. A late import, duplicate-pending transition, or soft deletion sets the prior award's `reversed_at`, appends one idempotent negative compensating event, and issues a replacement only when required. Unchanged `legacy-v1` awards retain their historical stored values even when the current formula would differ. Deleted events remain in history, are excluded from read projections, and no longer affect watch points or the timezone-aware current-streak projection. Placeholder reconciliation retains the provider event as a soft-deleted provenance row linked to the surviving canonical watch.
 
 ## Duplicate review contract
 

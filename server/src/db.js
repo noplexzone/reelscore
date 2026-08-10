@@ -774,24 +774,3 @@ export function watchCount(userId) {
     .prepare("SELECT COUNT(*) c FROM watches WHERE user_id = ? AND deleted_at IS NULL")
     .get(userId).c;
 }
-
-export function currentStreak(userId) {
-  const rows = db
-    .prepare(
-      "SELECT DISTINCT date(watched_at) d FROM watches WHERE user_id = ? AND deleted_at IS NULL ORDER BY d DESC LIMIT 400"
-    )
-    .all(userId)
-    .map((r) => r.d);
-  if (rows.length === 0) return 0;
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  if (rows[0] !== today && rows[0] !== yesterday) return 0;
-  let streak = 1;
-  for (let i = 1; i < rows.length; i++) {
-    const prev = new Date(rows[i - 1] + "T00:00:00Z").getTime();
-    const cur = new Date(rows[i] + "T00:00:00Z").getTime();
-    if (prev - cur === 86400000) streak++;
-    else break;
-  }
-  return streak;
-}
