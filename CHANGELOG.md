@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Daily runtime cap on logging watches (26 runtime-hours per calendar day). New users typically log their entire watch history on first login, which the cap blocked with a 429.
 
 ### Changed
+- Lifetime scoring now reads from the append-oriented score ledger. Manual and imported watches are scored atomically with explicit first-watch, cooldown, and rewatch explanations; corrections use compensating reversals; watch deletion is a reversible soft delete; and provider reconciliation preserves source-event provenance.
 - Acceptance/CI image updated to `noplexzone/reelscore:develop`. Stable semver tags and `latest` are reserved for future promoted releases.
 - Custom in-memory rate limiter replaced with `express-rate-limit` ^7 (20 req / 15 min window on `/login` and `/register`).
 - `parsePositiveInt` extracted to `server/src/validation.js`; POST `/watches` and DELETE `/watches/:id` now validate with it (400 on bad input, 404 when no owned entry is removed).

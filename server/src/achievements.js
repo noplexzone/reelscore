@@ -1,6 +1,7 @@
 import { db, currentStreak } from "./db.js";
 import { collectionDetails, personDetails, personMovieCredits } from "./tmdb.js";
 import { curatedPerson, filterFilmography, personBonus } from "./people.js";
+import { awardScoreEvent } from "./repositories/score-ledger.js";
 
 // ---- Achievement catalog (v1) -------------------------------------------
 // Tiered achievements generated from metadata. Series completion is dynamic
@@ -34,14 +35,23 @@ export const STREAK_TIERS = [
 ];
 
 function unlock(userId, key, name, description, points) {
-  const res = db
-    .prepare(
-      `INSERT OR IGNORE INTO achievements (user_id, key, name, description, points)
-       VALUES (?, ?, ?, ?, ?)`
-    )
-    .run(userId, key, name, description, points);
-  if (res.changes > 0) return { key, name, description, points };
-  return null;
+  return db.transaction(() => {
+    const res = db.prepare(`INSERT OR IGNORE INTO achievements (user_id, key, name, description, points)
+      VALUES (?, ?, ?, ?, ?)`).run(userId, key, name, description, points);
+    if (res.changes === 0) return null;
+    const achievementId = Number(res.lastInsertRowid);
+    const event = awardScoreEvent({
+      eventKey: `achievement/${achievementId}/legacy-runtime`,
+      userId,
+      achievementId,
+      category: "legacy_achievement",
+      points,
+      ruleVersion: "legacy-runtime-v1",
+      metadata: { key, name, stored_points: points, reason: "legacy_permanent_unlock" },
+    });
+    db.prepare("UPDATE achievements SET score_event_id=? WHERE id=?").run(event.id, achievementId);
+    return { key, name, description, points };
+  })();
 }
 
 // Evaluate all achievement rules after a watch is logged.
@@ -188,13 +198,13 @@ export async function checkPersonCompletion(userId, personId) {
 // Progress toward locked tiers, for the achievements page.
 export function progress(userId) {
   const count = db
-    .prepare("SELECT COUNT(*) c FROM watches WHERE user_id = ?")
+    .prepare("SELECT COUNT(*) c FROM watches WHERE user_id = ? AND deleted_at IS NULL")
     .get(userId).c;
   const streak = currentStreak(userId);
   const decades = db
     .prepare(
       `SELECT COUNT(DISTINCT (CAST(substr(release_date,1,4) AS INTEGER)/10)*10) d
-       FROM watches WHERE user_id = ? AND release_date IS NOT NULL AND release_date != ''`
+       FROM watches WHERE user_id = ? AND deleted_at IS NULL AND release_date IS NOT NULL AND release_date != ''`
     )
     .get(userId).d;
   return { volume: count, streak, decades };

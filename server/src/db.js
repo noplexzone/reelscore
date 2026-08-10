@@ -764,28 +764,21 @@ export function runMigrations({ skipBackup = false, targetVersion = 7 } = {}) {
 // Query helpers
 // ---------------------------------------------------------------------------
 
-export function totalScore(userId) {
-  const w = db
-    .prepare("SELECT COALESCE(SUM(points),0) s FROM watches WHERE user_id = ?")
-    .get(userId).s;
-  const a = db
-    .prepare(
-      "SELECT COALESCE(SUM(points),0) s FROM achievements WHERE user_id = ?"
-    )
-    .get(userId).s;
-  return w + a;
+export function totalScore(userId, { seasonId = null } = {}) {
+  return db.prepare("SELECT COALESCE(SUM(points),0) s FROM score_events WHERE user_id=? AND season_id IS ?")
+    .get(userId, seasonId).s;
 }
 
 export function watchCount(userId) {
   return db
-    .prepare("SELECT COUNT(*) c FROM watches WHERE user_id = ?")
+    .prepare("SELECT COUNT(*) c FROM watches WHERE user_id = ? AND deleted_at IS NULL")
     .get(userId).c;
 }
 
 export function currentStreak(userId) {
   const rows = db
     .prepare(
-      "SELECT DISTINCT date(watched_at) d FROM watches WHERE user_id = ? ORDER BY d DESC LIMIT 400"
+      "SELECT DISTINCT date(watched_at) d FROM watches WHERE user_id = ? AND deleted_at IS NULL ORDER BY d DESC LIMIT 400"
     )
     .all(userId)
     .map((r) => r.d);

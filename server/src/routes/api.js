@@ -1,16 +1,18 @@
 import { Router } from "express";
-import { db, totalScore, watchCount, currentStreak } from "../db.js";
+import { db, watchCount, currentStreak } from "../db.js";
 import { requireCsrf } from "../auth.js";
 import {
   searchMovies, movieDetails, collectionDetails, trendingMovies,
   personDetails, personMovieCredits,
 } from "../tmdb.js";
-import { watchPoints, basePoints } from "../scoring.js";
+import { basePoints } from "../scoring.js";
 import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
 import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notablePeopleInMovie } from "../people.js";
 import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
-import { recomputeUserWatchScores } from "../sync.js";
+import { scoreWatchEvent, reconcileMovieEligibility } from "../services/scoring-service.js";
+import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
+import { insertWatch, softDeleteWatch } from "../repositories/watch-repository.js";
 
 export const api = Router();
 
@@ -29,6 +31,7 @@ function userSummary(u) {
     id: u.id,
     username: u.username,
     score: totalScore(u.id),
+    score_breakdown: scoreBreakdown(u.id),
     watches: watchCount(u.id),
     streak: currentStreak(u.id),
     public_profile: !!u.public_profile,
@@ -53,7 +56,7 @@ api.get("/home", async (req, res, next) => {
     const uid = req.user.id;
     const u = db.prepare("SELECT * FROM users WHERE id = ?").get(uid);
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?").all(uid).map((r) => r.tmdb_id)
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL").all(uid).map((r) => r.tmdb_id)
     );
     const today = new Date().toISOString().slice(0, 10);
 
@@ -61,7 +64,7 @@ api.get("/home", async (req, res, next) => {
     const startedCols = db
       .prepare(
         `SELECT collection_id id, MAX(watched_at) last FROM watches
-         WHERE user_id = ? AND collection_id IS NOT NULL
+         WHERE user_id = ? AND collection_id IS NOT NULL AND deleted_at IS NULL
          GROUP BY collection_id ORDER BY last DESC LIMIT 8`
       )
       .all(uid);
@@ -163,7 +166,7 @@ api.get("/movie/:id", async (req, res, next) => {
     const m = await movieDetails(tmdbId);
     const watched = db
       .prepare(
-        "SELECT id, watched_at, points, source FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
+        "SELECT id, watched_at, points, source FROM watches WHERE user_id = ? AND tmdb_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC"
       )
       .all(req.user.id, m.id);
     res.json({
@@ -195,7 +198,7 @@ api.get("/collection/:id", async (req, res, next) => {
     const col = await collectionDetails(colId);
     const watchedIds = new Set(
       db
-        .prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+        .prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
@@ -223,7 +226,7 @@ api.get("/collection/:id", async (req, res, next) => {
 api.get("/people", async (req, res, next) => {
   try {
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
@@ -270,7 +273,7 @@ api.get("/people/:id", async (req, res, next) => {
   try {
     const [person, credits] = await Promise.all([personDetails(pid), personMovieCredits(pid)]);
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ?")
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
@@ -304,43 +307,11 @@ api.post("/watches", async (req, res, next) => {
 
     const m = await movieDetails(tmdbId);
 
-    const prior = db
-      .prepare(
-        "SELECT watched_at FROM watches WHERE user_id = ? AND tmdb_id = ? ORDER BY watched_at DESC"
-      )
-      .all(req.user.id, tmdbId)
-      .map((r) => r.watched_at);
-
-    const { points, isRewatch, reason } = watchPoints({
-      voteAverage: m.vote_average,
-      runtime: m.runtime,
-      priorWatches: prior,
-    });
-
-    const info = db
-      .prepare(
-        `INSERT INTO watches
-         (user_id, tmdb_id, title, poster_path, vote_average, runtime, release_date,
-          genres, collection_id, collection_name, points, is_rewatch, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`
-      )
-      .run(
-        req.user.id,
-        m.id,
-        m.title,
-        m.poster_path,
-        m.vote_average,
-        m.runtime,
-        m.release_date,
-        JSON.stringify((m.genres || []).map((g) => g.name)),
-        m.belongs_to_collection?.id || null,
-        m.belongs_to_collection?.name || null,
-        points,
-        isRewatch ? 1 : 0
-      );
-
-    db.transaction(() => recomputeUserWatchScores(req.user.id, m.id))();
-    const scoredWatch = db.prepare("SELECT points,is_rewatch FROM watches WHERE id=?").get(info.lastInsertRowid);
+    const scoredWatch = db.transaction(() => {
+      const watch = insertWatch({ userId: req.user.id, movie: m });
+      scoreWatchEvent(watch.id);
+      return db.prepare("SELECT id,points,is_rewatch,eligibility_reason FROM watches WHERE id=?").get(watch.id);
+    })();
 
     const newAchievements = await evaluate(req.user.id, {
       collection_id: m.belongs_to_collection?.id || null,
@@ -348,7 +319,7 @@ api.post("/watches", async (req, res, next) => {
     });
 
     res.json({
-      watch: { id: info.lastInsertRowid, title: m.title, points: scoredWatch.points, isRewatch: !!scoredWatch.is_rewatch, reason },
+      watch: { id: scoredWatch.id, title: m.title, points: scoredWatch.points, isRewatch: !!scoredWatch.is_rewatch, reason: scoredWatch.eligibility_reason },
       new_achievements: newAchievements,
       score: totalScore(req.user.id),
     });
@@ -361,7 +332,7 @@ api.get("/watches", (req, res) => {
   const rows = db
     .prepare(
       `SELECT id, tmdb_id, title, poster_path, points, is_rewatch, watched_at, source
-       FROM watches WHERE user_id = ? ORDER BY watched_at DESC LIMIT 100`
+       FROM watches WHERE user_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC LIMIT 100`
     )
     .all(req.user.id);
   res.json({ watches: rows });
@@ -370,14 +341,12 @@ api.get("/watches", (req, res) => {
 api.delete("/watches/:id", (req, res) => {
   const watchId = parsePositiveInt(req.params.id);
   if (!watchId) return res.status(400).json({ error: "Invalid watch ID." });
-  const result = db.transaction(() => {
-    const watch = db.prepare("SELECT tmdb_id FROM watches WHERE id = ? AND user_id = ?").get(watchId, req.user.id);
-    if (!watch) return { changes: 0 };
-    const deleted = db.prepare("DELETE FROM watches WHERE id = ? AND user_id = ?").run(watchId, req.user.id);
-    if (deleted.changes) recomputeUserWatchScores(req.user.id, watch.tmdb_id);
-    return deleted;
+  const deleted = db.transaction(() => {
+    const watch = softDeleteWatch(req.user.id, watchId);
+    if (watch) reconcileMovieEligibility(req.user.id, [watch.tmdb_id]);
+    return watch;
   })();
-  if (result.changes === 0) return res.status(404).json({ error: "Watch entry not found." });
+  if (!deleted) return res.status(404).json({ error: "Watch entry not found." });
   res.json({ ok: true });
 });
 
@@ -470,7 +439,7 @@ api.get("/feed", (req, res) => {
     .prepare(
       `SELECT w.title, w.poster_path, w.points, w.watched_at, w.tmdb_id, w.source, u.username
        FROM watches w JOIN users u ON u.id = w.user_id
-       WHERE w.user_id IN (${placeholders})
+       WHERE w.user_id IN (${placeholders}) AND w.deleted_at IS NULL
        ORDER BY w.watched_at DESC LIMIT 50`
     )
     .all(...ids);
@@ -490,7 +459,7 @@ api.get("/users/:username", (req, res) => {
   const recent = db
     .prepare(
       `SELECT title, poster_path, points, watched_at, tmdb_id, source FROM watches
-       WHERE user_id = ? ORDER BY watched_at DESC LIMIT 12`
+       WHERE user_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC LIMIT 12`
     )
     .all(u.id);
   const linkedServices = db

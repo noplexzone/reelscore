@@ -81,7 +81,10 @@ test("normal sync is additive and never implicitly converts a same-day manual ro
   const unrelatedBefore = db.prepare("SELECT * FROM watches WHERE id=?").get(unrelatedId);
   await importHistory(uid, "plex", [event(401, "2022-03-03T22:00:00Z", "plex-play")], getMovie, { connectionId: "machine:account" });
   const after = db.prepare("SELECT * FROM watches WHERE id=?").get(manualId);
-  assert.deepEqual(after, before, "normal sync must not mutate any manual-watch field");
+  for (const field of ["id", "user_id", "tmdb_id", "title", "poster_path", "vote_average", "runtime", "release_date", "genres", "collection_id", "collection_name", "source", "watched_at", "provider_service", "provider_connection_id", "provider_event_id", "deleted_at"]) {
+    assert.deepEqual(after[field], before[field], `normal sync must preserve manual ${field}`);
+  }
+  assert.equal(after.eligibility_reason, "canonical_first_watch");
   assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unrelatedId), unrelatedBefore);
   assert.equal(watchesOf(uid).length, 3);
 });
@@ -153,11 +156,18 @@ test("explicit preview/apply reconciles selected placeholder in place, preserves
   const selected = db.prepare("SELECT * FROM watches WHERE id=?").get(selectedId);
   assert.equal(selected.watched_at, "2020-02-03 21:15:00");
   assert.equal(selected.source, "plex");
-  assert.equal(selected.provider_event_id, "plex:machine:subject:history-501");
+  assert.equal(selected.provider_event_id, null);
+  const reconciledProvider = db.prepare("SELECT deleted_at,deleted_reason,provider_event_id,logical_canonical_watch_id FROM watches WHERE provider_event_id=?").get("plex:machine:subject:history-501");
+  assert.ok(reconciledProvider.deleted_at);
+  assert.equal(reconciledProvider.deleted_reason, "placeholder_reconciled");
+  assert.equal(reconciledProvider.logical_canonical_watch_id, selectedId);
   assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(odysseyId), odysseyBefore);
-  assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedSameMovieId), unselectedSameMovieBefore);
+  const unselectedSameMovieAfter = db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedSameMovieId);
+  for (const field of ["id", "user_id", "tmdb_id", "title", "poster_path", "vote_average", "runtime", "release_date", "genres", "collection_id", "collection_name", "source", "watched_at", "provider_service", "provider_connection_id", "provider_event_id", "deleted_at"]) {
+    assert.deepEqual(unselectedSameMovieAfter[field], unselectedSameMovieBefore[field], `reconciliation must preserve unmatched manual ${field}`);
+  }
   assert.deepEqual(db.prepare("SELECT * FROM achievements WHERE user_id=?").all(uid), achievementBefore);
-  assert.equal(watchesOf(uid).filter((row) => row.tmdb_id === 501).length, 2);
+  assert.equal(watchesOf(uid).filter((row) => row.tmdb_id === 501 && row.deleted_at === null).length, 2);
   assert.throws(() => applyPlaceholderReconciliation(uid, uid, { nonce: preview.nonce, previewHash: preview.preview_hash, candidateIds: [preview.candidates[0].candidate_id] }), /already used|invalid/i);
 
   const audit = db.prepare("SELECT * FROM audit_log WHERE action='reconcile_placeholders' AND target_id=? ORDER BY id DESC LIMIT 1").get(uid);
@@ -186,7 +196,11 @@ test("reconciliation leaves an unselected same-second provider row byte-for-byte
     previewHash: preview.preview_hash,
     candidateIds: [selected.candidate_id],
   });
-  assert.deepEqual(db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedProviderId), unselectedBefore);
+  const unselectedAfter = db.prepare("SELECT * FROM watches WHERE id=?").get(unselectedProviderId);
+  for (const field of ["id", "user_id", "tmdb_id", "title", "poster_path", "vote_average", "runtime", "release_date", "genres", "collection_id", "collection_name", "source", "watched_at", "provider_service", "provider_connection_id", "provider_event_id", "deleted_at"]) {
+    assert.deepEqual(unselectedAfter[field], unselectedBefore[field], `reconciliation must preserve unselected ${field}`);
+  }
+  assert.equal(unselectedAfter.eligibility_reason, "rewatch_cooldown");
 });
 
 

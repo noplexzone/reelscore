@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Migration 7 establishes the data contract for explainable, reversible scoring. It is additive and does **not** make the ledger the runtime score source; `totalScore()` and current route behavior remain unchanged until the scoring-service integration phase.
+Migration 7 establishes the data contract for explainable, reversible scoring. The scoring-service integration now makes `score_events` authoritative for lifetime totals while preserving migrated algebraic totals exactly. Achievement eligibility and revocation still use the compatibility path until the next phase.
 
 ## Event and time model
 
@@ -34,7 +34,14 @@ Pending duplicate and deleted events do not move the cooldown clock. Eligibility
 
 `score_events` is append-oriented. Rows identify a user and optionally a watch, achievement, and future season; record category, signed points, rule version, metadata snapshot, and creation time; and are reversed by setting `reversed_at` and appending one idempotent compensating row linked by `reverses_event_id`. Award points are never edited or deleted during normal scoring reconciliation; totals include both original and compensating rows. `season_id` is intentionally nullable and has no foreign key until the seasons schema is introduced; adding an SQLite reference to a table that does not yet exist makes the current database schema unusable with foreign keys enabled.
 
-Migration 7 creates one `legacy-v1` row for every stored watch and achievement, including zero-point explanatory events. Metadata is built only from stored columns. Unique deterministic `event_key` values make this backfill idempotent, and `achievements.score_event_id` points at its imported award. This ledger import preserves the exact algebraic sum, including negative stored values, but runtime totals continue to use the legacy columns during this phase.
+Migration 7 creates one `legacy-v1` row for every stored watch and achievement, including zero-point explanatory events. Metadata is built only from stored columns. Unique deterministic `event_key` values make this backfill idempotent, and `achievements.score_event_id` points at its imported award. This ledger import preserves the exact algebraic sum, including negative stored values. Runtime totals now sum lifetime ledger rows, including compensating reversals; `watches.points` remains a compatibility projection rather than the score source.
+
+
+## Runtime watch reconciliation
+
+Manual logging and provider imports insert the immutable watch record, derive local-day fields, evaluate eligibility, and append the award in one SQLite transaction. First watches, cooldown rewatches, and paid rewatches receive distinct categories, including zero-point explanatory events whose metadata snapshots the stored rating, runtime, timestamp, source, calculation, and reason.
+
+Reconciliation is deterministic per `(user_id, tmdb_id)` timeline. A late import, duplicate-pending transition, or soft deletion sets the prior award's `reversed_at`, appends one idempotent negative compensating event, and issues a replacement only when required. Unchanged `legacy-v1` awards retain their historical stored values even when the current formula would differ. Deleted events remain in history, are excluded from read projections, and no longer affect watch points or the interim UTC streak calculation. Placeholder reconciliation retains the provider event as a soft-deleted provenance row linked to the surviving canonical watch.
 
 ## Duplicate review contract
 
@@ -44,6 +51,6 @@ Migration 7 creates one `legacy-v1` row for every stored watch and achievement, 
 
 - Version 7 runs through the existing verified `VACUUM INTO` backup gate for any populated database.
 - All schema additions are conditional or `IF NOT EXISTS`, and ledger imports use unique identities plus `INSERT OR IGNORE`.
-- Existing users, watches, achievements, relationships, stored point columns, and current runtime score behavior are preserved.
+- Existing users, watches, achievements, relationships, and stored point columns are preserved; the authoritative runtime total moves from mutable projections to the equivalent ledger sum.
 - Foreign keys protect user/watch/achievement references; indexes support active user totals, source award lookup, pending duplicate queues, and ignore-rule matching.
 - Migration backfill is deterministic and performs no network calls.
