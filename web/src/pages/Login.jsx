@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, Redirect, useLocation } from "wouter";
 import { api, setSession, isAuthed } from "../api.js";
+import { saveMfaChallenge } from "./MfaChallenge.jsx";
 
 export default function Login() {
   const [mode, setMode] = useState("login");
@@ -42,6 +43,12 @@ export default function Login() {
       if (mode === "register" && !data.user) {
         setNotice(data.message || "Check your email to verify your account.");
         setMode("login");
+        return;
+      }
+      if (data.mfa_required) {
+        saveMfaChallenge(data);
+        setPassword("");
+        navigate("/mfa");
         return;
       }
       setSession(data.user, data.csrf_token);

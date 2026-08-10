@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "NODE_ENV=test DATA_DIR=/tmp/rs-test SESSION_SECRET=test-secret-that-is-at-least-32-chars-long node --test test/scoring.test.js test/auth.test.js test/validation.test.js test/people.test.js test/sync.test.js test/config.test.js test/migration.test.js test/account-foundation.test.js test/public-auth.test.js test/session.test.js test/security.test.js test/admin.test.js test/provider.test.js test/hosted.test.js"
+    "test": "NODE_ENV=test DATA_DIR=/tmp/rs-test SESSION_SECRET=test-secret-that-is-at-least-32-chars-long node --test test/scoring.test.js test/auth.test.js test/validation.test.js test/people.test.js test/sync.test.js test/config.test.js test/migration.test.js test/account-foundation.test.js test/public-auth.test.js test/session.test.js test/mfa.test.js test/security.test.js test/admin.test.js test/provider.test.js test/hosted.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -15,6 +15,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.5.1",
     "helmet": "^8.3.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "otpauth": "9.5.1"
   }
 }

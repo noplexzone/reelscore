@@ -7,6 +7,15 @@ import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED, PUBLIC_URL, REGISTRATION_MODE, SESSIO
 import { consumeAccountToken, normalizeEmail } from "./account-tokens.js";
 import { issueAccountEmail } from "./account-email.js";
 import { normalizeEmailRecipient } from "./email.js";
+import {
+  beginTotpSetup,
+  confirmTotpSetup,
+  disableMfa,
+  issueLoginChallenge,
+  mfaStatus,
+  regenerateRecoveryCodes,
+  verifyLoginChallenge,
+} from "./mfa.js";
 
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_ACTIVE_SESSIONS = 10;
@@ -50,12 +59,13 @@ export function createSession(userId, { ip = null, userAgent = null } = {}) {
   const token = randomHex(32);
   const csrfToken = randomHex(32);
   const tokenHash = sessionTokenHash(token);
+  const publicId = randomBytes(16).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString().replace("T", " ").slice(0, 19);
 
   db.prepare(
-    `INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, ip, user_agent, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
-  ).run(tokenHash, userId, csrfToken, expiresAt, ip, userAgent);
+    `INSERT INTO sessions (token_hash, public_id, user_id, csrf_token, expires_at, ip, user_agent, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(tokenHash, publicId, userId, csrfToken, expiresAt, ip, userAgent);
   db.prepare(`DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN (
     SELECT token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?
   )`).run(userId, userId, MAX_ACTIVE_SESSIONS);
@@ -97,6 +107,22 @@ const accountEmailLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many email requests. Please try again later." },
+});
+
+const mfaChallengeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many MFA attempts. Please try again later." },
+});
+
+const mfaAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many MFA account changes. Please try again later." },
 });
 
 const GENERIC_EMAIL_RESPONSE = {
@@ -275,6 +301,7 @@ authRouter.post("/password-reset/complete", authLimiter, async (req, res) => {
     onConsume: ({ userId }) => {
       db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(passwordHash, userId);
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(userId);
+      db.prepare("DELETE FROM mfa_login_challenges WHERE user_id=?").run(userId);
     },
   });
   if (!consumed) return res.status(400).json({ error: "Password reset link is invalid or expired." });
@@ -347,21 +374,113 @@ authRouter.post("/login", authLimiter, async (req, res) => {
     return res.status(403).json({ error: "Verify your email before signing in." });
   }
 
+  if (user.mfa_enabled_at && user.totp_secret_encrypted) {
+    const challenge = issueLoginChallenge(user.id, {
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] || null,
+    });
+    return res.status(202).json({ mfa_required: true, ...challenge });
+  }
+
   const { token, csrfToken } = createSession(user.id, {
     ip: req.ip,
     userAgent: req.headers["user-agent"] || null,
   });
   setSessionCookie(res, token);
-  res.json({
-    csrf_token: csrfToken,
-    user: {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      email: user.email || null,
-      email_verified: !!user.email_verified_at,
+  return res.json({ csrf_token: csrfToken, user: userDto(user) });
+});
+
+function userDto(user) {
+  return {
+    id: user.id ?? user.user_id,
+    username: user.username,
+    role: user.role,
+    email: user.email || null,
+    email_verified: !!user.email_verified_at,
+    mfa_enabled: !!user.mfa_enabled_at,
+  };
+}
+
+authRouter.post("/mfa/challenge", mfaChallengeLimiter, (req, res) => {
+  const result = verifyLoginChallenge({
+    token: req.body?.challenge_token,
+    code: req.body?.code,
+    onVerified: (challenge) => {
+      const session = createSession(challenge.user_id, {
+        ip: req.ip,
+        userAgent: req.headers["user-agent"] || null,
+      });
+      return { challenge, session };
     },
   });
+  if (!result) return res.status(401).json({ error: "Invalid or expired MFA challenge or code." });
+  setSessionCookie(res, result.session.token);
+  return res.json({ csrf_token: result.session.csrfToken, user: userDto(result.challenge) });
+});
+
+authRouter.get("/mfa/status", requireAuth, (req, res) => res.json(mfaStatus(req.user.id)));
+
+authRouter.post("/mfa/setup/begin", mfaAccountLimiter, requireAuth, requireCsrf, (req, res) => {
+  if (req.user.mfaEnabled) return res.status(409).json({ error: "MFA is already enabled." });
+  return res.json(beginTotpSetup(req.user));
+});
+
+authRouter.post("/mfa/setup/confirm", mfaAccountLimiter, requireAuth, requireCsrf, (req, res) => {
+  const result = confirmTotpSetup(req.user.id, req.body?.code, { currentSessionHash: req.sessionData.tokenHash });
+  if (!result) return res.status(400).json({ error: "Enter a valid current authenticator code." });
+  return res.json(result);
+});
+
+authRouter.post("/mfa/recovery/regenerate", mfaAccountLimiter, requireAuth, requireCsrf, async (req, res) => {
+  const user = db.prepare("SELECT password_hash FROM users WHERE id=?").get(req.user.id);
+  if (!user || !(await bcrypt.compare(String(req.body?.password || ""), user.password_hash))) {
+    return res.status(401).json({ error: "Password or MFA code is incorrect." });
+  }
+  const recoveryCodes = regenerateRecoveryCodes(req.user.id, req.body?.code);
+  if (!recoveryCodes) return res.status(401).json({ error: "Password or MFA code is incorrect." });
+  return res.json({ recovery_codes: recoveryCodes });
+});
+
+authRouter.post("/mfa/disable", mfaAccountLimiter, requireAuth, requireCsrf, async (req, res, next) => {
+  const user = db.prepare("SELECT password_hash FROM users WHERE id=?").get(req.user.id);
+  if (!user || !(await bcrypt.compare(String(req.body?.password || ""), user.password_hash))) {
+    return res.status(401).json({ error: "Password or MFA code is incorrect." });
+  }
+  try {
+    const disabled = disableMfa(req.user.id, { code: req.body?.code, currentSessionHash: req.sessionData.tokenHash });
+    if (!disabled) return res.status(401).json({ error: "Password or MFA code is incorrect." });
+    return res.json({ ok: true });
+  } catch (error) { return next(error); }
+});
+
+authRouter.get("/sessions", requireAuth, (req, res) => {
+  const sessions = db.prepare(`SELECT public_id,created_at,last_seen_at,expires_at,user_agent,ip,token_hash
+    FROM sessions WHERE user_id=?
+      AND julianday(expires_at)>julianday('now')
+      AND COALESCE(last_seen_at,created_at)>datetime('now','-7 days')
+    ORDER BY created_at DESC,rowid DESC`).all(req.user.id).map((session) => ({
+      id: session.public_id,
+      current: session.token_hash === req.sessionData.tokenHash,
+      created_at: session.created_at,
+      last_seen_at: session.last_seen_at,
+      expires_at: session.expires_at,
+      user_agent: session.user_agent,
+      ip: session.ip,
+    }));
+  return res.json({ sessions });
+});
+
+authRouter.post("/sessions/revoke-others", requireAuth, requireCsrf, (req, res) => {
+  const result = db.prepare("DELETE FROM sessions WHERE user_id=? AND token_hash<>?").run(req.user.id, req.sessionData.tokenHash);
+  return res.json({ ok: true, revoked: result.changes });
+});
+
+authRouter.post("/sessions/:id/revoke", requireAuth, requireCsrf, (req, res) => {
+  const session = db.prepare("SELECT token_hash FROM sessions WHERE public_id=? AND user_id=?").get(req.params.id, req.user.id);
+  if (!session) return res.status(404).json({ error: "Session not found." });
+  if (session.token_hash === req.sessionData.tokenHash) return res.status(409).json({ error: "Sign out to end the current session." });
+  db.prepare("DELETE FROM sessions WHERE public_id=? AND user_id=?").run(req.params.id, req.user.id);
+  return res.json({ ok: true });
 });
 
 authRouter.post("/logout", requireAuth, requireCsrf, (req, res) => {
@@ -383,6 +502,7 @@ authRouter.get("/me", requireAuth, (req, res) => {
       role: req.user.role,
       email: req.user.email,
       email_verified: req.user.emailVerified,
+      mfa_enabled: req.user.mfaEnabled,
     },
   });
 });
@@ -399,7 +519,7 @@ export function requireAuth(req, res, next) {
   const session = db
     .prepare(
       `SELECT s.token_hash, s.csrf_token, s.expires_at, s.last_seen_at,
-              u.id, u.username, u.role, u.status, u.email, u.email_verified_at
+              u.id, u.username, u.role, u.status, u.email, u.email_verified_at, u.mfa_enabled_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ? AND julianday(s.expires_at) > julianday('now')
@@ -426,6 +546,7 @@ export function requireAuth(req, res, next) {
     status: session.status,
     email: session.email || null,
     emailVerified: !!session.email_verified_at,
+    mfaEnabled: !!session.mfa_enabled_at,
   };
   req.sessionData = {
     tokenHash: session.token_hash,
@@ -461,6 +582,9 @@ export function requireCsrf(req, res, next) {
 export function requireAdmin(req, res, next) {
   if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({ error: "Admin access required." });
+  }
+  if (IS_HOSTED && !req.user.mfaEnabled) {
+    return res.status(403).json({ error: "Enable MFA before using administrator features." });
   }
   next();
 }

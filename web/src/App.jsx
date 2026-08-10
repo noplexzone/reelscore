@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { Router, Switch, Route, Link, Redirect, useLocation } from "wouter";
 import { isAuthed, logout, getUser, hydrateSession } from "./api.js";
 import Login from "./pages/Login.jsx";
+import MfaChallenge from "./pages/MfaChallenge.jsx";
+import Settings from "./pages/Settings.jsx";
 import VerifyEmail from "./pages/VerifyEmail.jsx";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ResetPassword from "./pages/ResetPassword.jsx";
@@ -44,6 +46,7 @@ function Nav() {
     <div className="nav-links">
       <ActiveLink to="/" exact>Home</ActiveLink><ActiveLink to="/search">Search</ActiveLink><ActiveLink to="/actors">Actors</ActiveLink><ActiveLink to="/achievements">Trophies</ActiveLink><ActiveLink to="/friends">Friends</ActiveLink>
       {u && <ActiveLink to={`/u/${u.username}`}>Me</ActiveLink>}
+      {u && <ActiveLink to="/settings">Settings</ActiveLink>}
       {u && !u.email_verified && <ActiveLink to="/claim-email">Verify email</ActiveLink>}
       {u?.role === "admin" && <ActiveLink to="/admin">Admin</ActiveLink>}
       <a href="/login" onClick={signOut}>Sign out</a>
@@ -69,10 +72,12 @@ export default function App() {
   if (!ready) return <div className="auth-wrap"><div className="brand">REEL<em>SCORE</em></div><p className="muted">Loading…</p></div>;
   return <ToastCtx.Provider value={pushToast}><Router><div className="app"><Switch>
     <Route path="/login"><Login /></Route>
+    <Route path="/mfa"><MfaChallenge /></Route>
     <Route path="/verify-email"><VerifyEmail /></Route>
     <Route path="/forgot-password"><ForgotPassword /></Route>
     <Route path="/reset-password"><ResetPassword /></Route>
     <Route path="/claim-email"><Protected><ClaimEmail /></Protected></Route>
+    <Route path="/settings"><Protected><Settings /></Protected></Route>
     <Route path="/search"><Protected><Search /></Protected></Route>
     <Route path="/movie/:id"><Protected><Movie /></Protected></Route>
     <Route path="/actors"><Protected><Actors /></Protected></Route>

@@ -239,6 +239,19 @@ test("migration: verified-account foundation preserves legacy null-email users a
   assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=5").get());
 });
 
+test("migration: MFA secrets, one-use recovery codes, challenges, and safe session identifiers are additive", () => {
+  const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map((row) => row.name));
+  assert.ok(userColumns.has("totp_pending_encrypted"));
+  assert.ok(userColumns.has("totp_secret_encrypted"));
+  assert.ok(userColumns.has("mfa_enabled_at"));
+  assert.ok(new Set(db.prepare("PRAGMA table_info(sessions)").all().map((row) => row.name)).has("public_id"));
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mfa_recovery_codes'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mfa_login_challenges'").get());
+  assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=6").get());
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users").get().c, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 4);
+});
+
 test("backup includes committed WAL rows when a reader prevents checkpointing", async () => {
   const reader = new Database(DB_PATH);
   reader.pragma("journal_mode = WAL");

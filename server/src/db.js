@@ -402,12 +402,50 @@ function migration5() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (5)").run();
 }
 
+// Optional TOTP MFA, individually one-use recovery codes, login challenges,
+// and opaque public identifiers for user-facing session management.
+function migration6() {
+  if (!columnExists("users", "totp_pending_encrypted")) db.exec(`ALTER TABLE users ADD COLUMN totp_pending_encrypted TEXT`);
+  if (!columnExists("users", "totp_secret_encrypted")) db.exec(`ALTER TABLE users ADD COLUMN totp_secret_encrypted TEXT`);
+  if (!columnExists("users", "mfa_enabled_at")) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled_at INTEGER`);
+  if (!columnExists("sessions", "public_id")) db.exec(`ALTER TABLE sessions ADD COLUMN public_id TEXT`);
+  db.exec(`
+    UPDATE sessions SET public_id=lower(hex(randomblob(16))) WHERE public_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_public_id ON sessions(public_id);
+
+    CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_digest TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      used_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_mfa_recovery_user
+      ON mfa_recovery_codes(user_id, used_at);
+
+    CREATE TABLE IF NOT EXISTS mfa_login_challenges (
+      challenge_digest TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      ip TEXT,
+      user_agent TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_mfa_challenge_user
+      ON mfa_login_challenges(user_id, consumed_at, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_mfa_challenge_expiry
+      ON mfa_login_challenges(expires_at);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (6)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
 export function runMigrations({ skipBackup = false } = {}) {
-  const latestVersion = 5;
+  const latestVersion = 6;
   const appliedBefore = tableExists("schema_versions")
     ? new Set(db.prepare("SELECT version FROM schema_versions").all().map((row) => row.version))
     : new Set();
@@ -415,7 +453,7 @@ export function runMigrations({ skipBackup = false } = {}) {
   if (highestVersion > latestVersion) {
     throw new Error(`[reelscore] Database schema version ${highestVersion} is newer than this build supports (${latestVersion}).`);
   }
-  const hasPendingMigration = [1, 2, 3, 4, 5].some((version) => !appliedBefore.has(version));
+  const hasPendingMigration = [1, 2, 3, 4, 5, 6].some((version) => !appliedBefore.has(version));
 
   // Back up any non-empty database before every pending schema migration,
   // including upgrades between versioned schemas.
@@ -458,6 +496,9 @@ export function runMigrations({ skipBackup = false } = {}) {
   }
   if (!applied.has(5)) {
     db.transaction(migration5)();
+  }
+  if (!applied.has(6)) {
+    db.transaction(migration6)();
   }
 
   if (process.env.APP_MODE === "hosted") {

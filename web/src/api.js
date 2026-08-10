@@ -37,11 +37,12 @@ export async function api(path, opts = {}) {
   const { suppressAuthRedirect = false, headers: extraHeaders = {}, ...fetchOpts } = opts;
   const method = (fetchOpts.method || "GET").toUpperCase();
   const mutating = !["GET", "HEAD", "OPTIONS"].includes(method);
+  const publicAuthRequest = ["/auth/login", "/auth/register", "/auth/mfa/challenge"].includes(path);
   const headers = { ...extraHeaders };
   if (fetchOpts.body !== undefined && !(fetchOpts.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  if (mutating && csrfToken && path !== "/auth/login" && path !== "/auth/register") {
+  if (mutating && csrfToken && !publicAuthRequest) {
     headers["X-CSRF-Token"] = csrfToken;
   }
 
@@ -57,7 +58,7 @@ export async function api(path, opts = {}) {
         : JSON.stringify(fetchOpts.body),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && !suppressAuthRedirect && path !== "/auth/login" && path !== "/auth/register") {
+  if (res.status === 401 && !suppressAuthRedirect && !publicAuthRequest) {
     clearSession();
     window.location.href = "/login";
   }

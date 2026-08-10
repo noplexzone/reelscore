@@ -21,7 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 
-let server, base, db, app, plexValidate, finishFlow;
+let server, base, db, app, plexValidate, finishFlow, hostedAdminCookie, hostedAdminCsrf, hostedAdminId;
 const publicHeaders = { Host: "hosted.example.test", Origin: "https://hosted.example.test" };
 
 function rawRequest(pathname, { method = "GET", headers = {}, body = null } = {}) {
@@ -123,8 +123,11 @@ test("first admin bootstrap is one-use and issues a secure __Host cookie", async
   const body = JSON.parse(response.text);
   assert.equal(response.status, 200, JSON.stringify(body));
   assert.equal(body.user.role, "admin");
+  hostedAdminId = body.user.id;
+  hostedAdminCsrf = body.csrf_token;
   assert.equal(response.headers["cache-control"], "no-store");
   const cookie = String(response.headers["set-cookie"] || "");
+  hostedAdminCookie = cookie.split(";", 1)[0];
   assert.match(cookie, /^__Host-reelscore-session=/);
   assert.match(cookie, /HttpOnly/i);
   assert.match(cookie, /Secure/i);
@@ -139,6 +142,51 @@ test("first admin bootstrap is one-use and issues a secure __Host cookie", async
   });
   assert.equal(replay.status, 409);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM users").get().c, 1);
+});
+
+test("hosted administrators must enable MFA before admin access", async () => {
+  const denied = await rawRequest("/api/admin/users", {
+    headers: { Host: "hosted.example.test", Cookie: hostedAdminCookie },
+  });
+  assert.equal(denied.status, 403);
+  assert.match(JSON.parse(denied.text).error, /enable MFA/i);
+
+  const { encryptCredential } = await import("../src/providers.js");
+  const encrypted = encryptCredential("JBSWY3DPEHPK3PXP", {
+    userId: hostedAdminId,
+    connectionId: "account-mfa",
+    provider: "totp",
+    field: "active-secret",
+  });
+  db.prepare("UPDATE users SET totp_secret_encrypted=?,mfa_enabled_at=? WHERE id=?")
+    .run(encrypted, Date.now(), hostedAdminId);
+  const allowed = await rawRequest("/api/admin/users", {
+    headers: { Host: "hosted.example.test", Cookie: hostedAdminCookie },
+  });
+  assert.equal(allowed.status, 200, allowed.text);
+});
+
+test("hosted promotion requires MFA and active administrator MFA cannot be reset", async () => {
+  const targetId = Number(db.prepare("INSERT INTO users (username,password_hash) VALUES ('promotiontarget','hash')").run().lastInsertRowid);
+  const promote = (id) => rawRequest(`/api/admin/users/${id}/role`, {
+    method: "POST",
+    headers: { ...publicHeaders, Cookie: hostedAdminCookie, "content-type": "application/json", "x-csrf-token": hostedAdminCsrf },
+    body: JSON.stringify({ role: "admin" }),
+  });
+  const denied = await promote(targetId);
+  assert.equal(denied.status, 409);
+  assert.match(JSON.parse(denied.text).error, /enable MFA/i);
+
+  db.prepare("UPDATE users SET totp_secret_encrypted='test-envelope',mfa_enabled_at=? WHERE id=?").run(Date.now(), targetId);
+  assert.equal((await promote(targetId)).status, 200);
+
+  const reset = await rawRequest(`/api/admin/users/${targetId}/mfa/reset`, {
+    method: "POST",
+    headers: { ...publicHeaders, Cookie: hostedAdminCookie, "content-type": "application/json", "x-csrf-token": hostedAdminCsrf },
+    body: "{}",
+  });
+  assert.equal(reset.status, 409);
+  assert.match(JSON.parse(reset.text).error, /demote/i);
 });
 
 test("invalid hosted configuration leaves an existing database byte-identical", () => {

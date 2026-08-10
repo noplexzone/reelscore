@@ -301,3 +301,44 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
   .nav-links { width: 100%; margin-left: 0; justify-content: space-between; }
   .app { padding-bottom: 40px; }
 }
+
+
+/* ---- Account security settings ---- */
+.auth-heading { margin: 0; text-align: center; font-size: 24px; }
+.settings-page { max-width: 760px; margin: 0 auto; }
+.settings-page > h1 { font-family: var(--font-display); letter-spacing: .8px; }
+.settings-card { margin-top: 16px; }
+.settings-card h2, .settings-card h3 { margin: 0 0 6px; }
+.settings-card h2 { font-size: 20px; }
+.settings-card h3 { margin-top: 20px; font-size: 16px; }
+.settings-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.settings-card-heading p { margin: 2px 0 0; }
+.settings-message { margin: 10px 0; }
+.status-pill { display: inline-block; margin-left: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--dim); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.status-pill.enabled { border-color: var(--gold-dim); color: var(--gold); }
+.setup-box, .recovery-box { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-top: 12px; }
+.setup-box ol { padding-left: 22px; }
+.inline-link { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
+.setup-secret { display: block; overflow-wrap: anywhere; background: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 12px 0; color: var(--gold); font-family: var(--font-mono); }
+.settings-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: start; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.recovery-box { border-color: var(--gold-dim); }
+.recovery-box h3 { color: var(--gold); margin-top: 0; }
+.recovery-codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0 16px; }
+.recovery-codes code { background: var(--ink); border-radius: 6px; padding: 7px 9px; color: var(--cream); font-family: var(--font-mono); text-align: center; }
+.btn.danger { background: var(--velvet); color: var(--cream); }
+.session-list { display: grid; gap: 0; }
+.session-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+.session-row:first-child { border-top: 0; }
+.session-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 560px; }
+
+@media (max-width: 700px) {
+  .nav-links { flex-wrap: wrap; justify-content: flex-start; }
+  .settings-card-heading { flex-direction: column; }
+  .settings-form { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 420px) {
+  .recovery-codes { grid-template-columns: 1fr; }
+  .session-row { align-items: flex-start; }
+}
