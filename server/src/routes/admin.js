@@ -2,6 +2,8 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { requireAdmin, requireCsrf, randomHex, sha256, deleteUserSessions } from "../auth.js";
 import { applyPlaceholderReconciliation, previewPlaceholderReconciliation } from "../sync.js";
+import { IS_HOSTED } from "../config.js";
+import { disableMfa } from "../mfa.js";
 
 export const admin = Router();
 
@@ -27,6 +29,7 @@ function safeUser(u) {
     status: u.status,
     public_profile: !!u.public_profile,
     created_at: u.created_at,
+    mfa_enabled: !!u.mfa_enabled_at,
     // Provider link presence (not tokens/secrets).
     linked_services: u.linked_services || [],
   };
@@ -103,6 +106,12 @@ admin.post("/users/:id/role", (req, res) => {
   if (role !== "admin" && isLastAdmin(id)) {
     return res.status(409).json({ error: "At least one active admin is required." });
   }
+  if (IS_HOSTED && role === "admin") {
+    const target = db.prepare("SELECT mfa_enabled_at,status FROM users WHERE id=?").get(id);
+    if (!target?.mfa_enabled_at || target.status !== "active") {
+      return res.status(409).json({ error: "An active user must enable MFA before administrator promotion." });
+    }
+  }
 
   db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
   db.prepare(
@@ -162,6 +171,23 @@ admin.post("/users/:id/sessions/revoke", (req, res) => {
      VALUES (?, 'revoke_sessions', ?, ?, ?)`
   ).run(req.user.id, id, tokenHash || "all", req.ip);
   res.json({ ok: true });
+});
+
+admin.post("/users/:id/mfa/reset", (req, res, next) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "Invalid user id." });
+  const target = db.prepare("SELECT id,role,status,mfa_enabled_at FROM users WHERE id=?").get(id);
+  if (!target) return res.status(404).json({ error: "User not found." });
+  if (target.role === "admin" && target.status === "active") {
+    return res.status(409).json({ error: "Demote this active administrator before resetting MFA." });
+  }
+  if (!target.mfa_enabled_at) return res.status(409).json({ error: "MFA is not enabled for this user." });
+  try {
+    disableMfa(id, { allowAdmin: true });
+    db.prepare(`INSERT INTO audit_log (user_id,action,target_id,detail,ip)
+      VALUES (?, 'reset_mfa', ?, 'administrator reset', ?)`).run(req.user.id, id, req.ip);
+    return res.json({ ok: true });
+  } catch (error) { return next(error); }
 });
 
 // ---------------------------------------------------------------------------

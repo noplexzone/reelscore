@@ -6,9 +6,9 @@ Hosted mode uses the normal ReelScore image, but it **must** use a separate cont
 
 1. Set `HOSTED_DATA_DIR` to a new, dedicated directory. It must not be `/mnt/user/appdata/reelscore` or any private instance directory.
 2. Set an exact HTTPS-origin `PUBLIC_URL`.
-3. Generate independent `SESSION_SECRET` and `CREDENTIAL_ENCRYPTION_KEY` values.
+3. Generate independent `SESSION_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, and `EMAIL_OUTBOX_ENCRYPTION_KEY` values. The outbox key has its own key ID and previous-key map so session rotation does not destroy queued verification/reset mail.
 4. Set `PLEX_ALLOWED_SERVER_ID`, `PLEX_CLIENT_IDENTIFIER`, and `PLEX_ALLOWED_ORIGINS`. Every credential-bearing Plex destination must match an exact independently configured origin before ReelScore sends a token.
-5. Keep `REGISTRATION_MODE=invite` or `closed`.
+5. Keep `REGISTRATION_MODE=closed` for migration rehearsal. Set it to `open` only after production email delivery is configured and verified; open mode fails startup without an allowed `EMAIL_PROVIDER`.
 6. Store the dedicated tunnel token in a mode-0600 file and set `CLOUDFLARE_TUNNEL_TOKEN_FILE` to its absolute path. Compose mounts it as a secret. The tunnel origin is `http://reelscore-hosted:3000`.
 7. Do not publish port 3000/3210. The Compose file trusts only the pinned cloudflared peer (`172.29.0.2/32`), never a forwarded-hop count. Cloudflared and ReelScore share only the internal origin network; each has a separate outbound-only bridge network so provider traffic works without making the application reachable from unrelated containers.
 

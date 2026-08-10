@@ -28,12 +28,20 @@ export function validateConfig(env = {}) {
   const sessionSecret = env.SESSION_SECRET || env.JWT_SECRET || null;
   const credentialKey = env.CREDENTIAL_ENCRYPTION_KEY || null;
   const credentialKeyId = env.CREDENTIAL_ENCRYPTION_KEY_ID || "active";
+  const emailOutboxKey = env.EMAIL_OUTBOX_ENCRYPTION_KEY || null;
+  const emailOutboxKeyId = env.EMAIL_OUTBOX_ENCRYPTION_KEY_ID || "active";
   const publicUrl = env.PUBLIC_URL || null;
   const plexClientIdentifier = env.PLEX_CLIENT_IDENTIFIER || env.PLEX_CLIENT_ID || null;
-  const registrationMode = env.REGISTRATION_MODE || (isHosted ? "invite" : "open");
+  const registrationMode = env.REGISTRATION_MODE || "open";
+  const emailProvider = String(env.EMAIL_PROVIDER || "").trim().toLowerCase();
   const trustedProxyCidrs = cidrList(env.TRUSTED_PROXY_CIDRS);
   const bootstrapAdminToken = env.BOOTSTRAP_ADMIN_TOKEN || null;
   const nodeEnv = env.NODE_ENV || null;
+  let emailOutboxPreviousKeys = {};
+  try { emailOutboxPreviousKeys = JSON.parse(env.EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS || "{}"); } catch { throw new Error("[reelscore] EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS must be a JSON object."); }
+  if (!emailOutboxPreviousKeys || Array.isArray(emailOutboxPreviousKeys) || typeof emailOutboxPreviousKeys !== "object" || Object.entries(emailOutboxPreviousKeys).some(([id, value]) => !/^[A-Za-z0-9_-]{1,32}$/.test(id) || typeof value !== "string" || value.length < 32)) {
+    throw new Error("[reelscore] EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS must map valid key IDs to strong secrets.");
+  }
   if (!["self_hosted", "hosted"].includes(mode)) throw new Error("[reelscore] APP_MODE must be self_hosted or hosted.");
   if ((nodeEnv === "test" || nodeEnv === "production") && (!sessionSecret || sessionSecret.length < 32)) throw new Error("[reelscore] SESSION_SECRET must be set and at least 32 characters.");
 
@@ -44,11 +52,18 @@ export function validateConfig(env = {}) {
   if (isHosted) {
     if (!sessionSecret || sessionSecret.length < 32) throw new Error("[reelscore] FATAL: SESSION_SECRET must be set and at least 32 chars in hosted mode.");
     if (!credentialKey || credentialKey.length < 32) throw new Error("[reelscore] FATAL: CREDENTIAL_ENCRYPTION_KEY must be set independently and be at least 32 chars in hosted mode.");
+    if (!emailOutboxKey || emailOutboxKey.length < 32) throw new Error("[reelscore] FATAL: EMAIL_OUTBOX_ENCRYPTION_KEY must be set independently and be at least 32 chars in hosted mode.");
     if (credentialKey === sessionSecret) throw new Error("[reelscore] FATAL: credential and session secrets must be different in hosted mode.");
+    if (emailOutboxKey === sessionSecret || emailOutboxKey === credentialKey) throw new Error("[reelscore] FATAL: email outbox, credential, and session secrets must be different in hosted mode.");
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(credentialKeyId)) throw new Error("[reelscore] FATAL: CREDENTIAL_ENCRYPTION_KEY_ID is invalid.");
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(emailOutboxKeyId)) throw new Error("[reelscore] FATAL: EMAIL_OUTBOX_ENCRYPTION_KEY_ID is invalid.");
     if (!parsedPublic) throw new Error("[reelscore] FATAL: PUBLIC_URL must be set in hosted mode.");
     if (parsedPublic.protocol !== "https:" || parsedPublic.username || parsedPublic.password || parsedPublic.pathname !== "/" || parsedPublic.search || parsedPublic.hash) throw new Error("[reelscore] FATAL: PUBLIC_URL must be an HTTPS origin without credentials, path, query, or fragment.");
-    if (!["invite", "closed", "plex_server"].includes(registrationMode)) throw new Error("[reelscore] FATAL: hosted REGISTRATION_MODE must be invite, plex_server, or closed.");
+    if (!["open", "invite", "closed", "plex_server"].includes(registrationMode)) throw new Error("[reelscore] FATAL: hosted REGISTRATION_MODE must be open, invite, plex_server, or closed.");
+    if (registrationMode === "open") {
+      if (!["resend", "capture"].includes(emailProvider)) throw new Error("[reelscore] FATAL: EMAIL_PROVIDER must be configured for open hosted registration.");
+      if (emailProvider === "capture" && nodeEnv !== "test") throw new Error("[reelscore] FATAL: capture email delivery is test-only.");
+    }
     if (!String(env.PLEX_ALLOWED_SERVER_ID || "").trim()) throw new Error("[reelscore] FATAL: PLEX_ALLOWED_SERVER_ID is required in hosted mode.");
     if (!plexClientIdentifier) throw new Error("[reelscore] FATAL: PLEX_CLIENT_IDENTIFIER is required in hosted mode.");
     if (!trustedProxyCidrs.length) throw new Error("[reelscore] FATAL: TRUSTED_PROXY_CIDRS is required in hosted mode.");
@@ -69,7 +84,10 @@ export function validateConfig(env = {}) {
     APP_MODE: mode, IS_HOSTED: isHosted, SESSION_SECRET: resolvedSecret,
     CREDENTIAL_ENCRYPTION_KEY: credentialKey || (isHosted ? null : "reelscore-local-provider-key-change-me"),
     CREDENTIAL_ENCRYPTION_KEY_ID: credentialKeyId, CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: previousKeys,
-    PUBLIC_URL: publicUrl, REGISTRATION_MODE: registrationMode,
+    EMAIL_OUTBOX_ENCRYPTION_KEY: emailOutboxKey || (isHosted ? null : "reelscore-local-email-outbox-key-change-me"),
+    EMAIL_OUTBOX_ENCRYPTION_KEY_ID: emailOutboxKeyId,
+    EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS: emailOutboxPreviousKeys,
+    PUBLIC_URL: publicUrl, REGISTRATION_MODE: registrationMode, EMAIL_PROVIDER: emailProvider || null,
     TRUSTED_PROXY_CIDRS: trustedProxyCidrs, BOOTSTRAP_ADMIN_TOKEN: bootstrapAdminToken,
     PLEX_ALLOWED_SERVER_ID: String(env.PLEX_ALLOWED_SERVER_ID || "").trim(), PLEX_ALLOWED_ORIGINS: plexAllowedOrigins,
     PLEX_CLIENT_IDENTIFIER: plexClientIdentifier,
@@ -82,8 +100,12 @@ export const IS_HOSTED = _cfg.IS_HOSTED;
 export const SESSION_SECRET = _cfg.SESSION_SECRET;
 export const CREDENTIAL_ENCRYPTION_KEY = _cfg.CREDENTIAL_ENCRYPTION_KEY;
 export const CREDENTIAL_ENCRYPTION_KEY_ID = _cfg.CREDENTIAL_ENCRYPTION_KEY_ID;
+export const EMAIL_OUTBOX_ENCRYPTION_KEY = _cfg.EMAIL_OUTBOX_ENCRYPTION_KEY;
+export const EMAIL_OUTBOX_ENCRYPTION_KEY_ID = _cfg.EMAIL_OUTBOX_ENCRYPTION_KEY_ID;
+export const EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS = _cfg.EMAIL_OUTBOX_ENCRYPTION_PREVIOUS_KEYS;
 export const PUBLIC_URL = _cfg.PUBLIC_URL;
 export const REGISTRATION_MODE = _cfg.REGISTRATION_MODE;
+export const EMAIL_PROVIDER = _cfg.EMAIL_PROVIDER;
 export const TRUSTED_PROXY_CIDRS = _cfg.TRUSTED_PROXY_CIDRS;
 export const BOOTSTRAP_ADMIN_TOKEN = _cfg.BOOTSTRAP_ADMIN_TOKEN;
 export const PLEX_ALLOWED_SERVER_ID = _cfg.PLEX_ALLOWED_SERVER_ID;
