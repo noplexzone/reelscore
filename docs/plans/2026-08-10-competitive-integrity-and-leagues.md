@@ -23,21 +23,24 @@
 
 ## Business Rules
 
+> **Decision update:** The rules below are the evolved Phase 1 contract after implementation and review. Task-level decisions replaced the initial draft for cooldown explanations, timezone rebasing, `keep_separate`, and duplicate source scope; architecture and tests encode the same contract.
+
 ### Qualifying watches
 
 - `qualifies_for_volume`: canonical first non-deleted watch of a movie per user only.
 - `qualifies_for_achievement`: canonical unique-film progress only. Rewatches, cooldown events, and unresolved duplicate candidates do not advance unique progress.
 - `qualifies_for_streak`: canonical watches and rewatches outside the 30-day cooldown. Cooldown/pending duplicates do not extend streaks.
 - `qualifies_for_season`: events eligible for a watch/rewatch score under the active rule. Cooldown/pending duplicates are excluded.
-- Outside-cooldown rewatches use ledger category `watch_rewatch`; cooldown events remain history with no active award.
+- Outside-cooldown rewatches use ledger category `watch_rewatch`; cooldown events remain history with an active zero-point `watch_cooldown` explanation so the ledger records why no points were awarded.
 - Provider identity remains idempotent on `(user_id, provider_service, provider_connection_id, provider_event_id)`.
 
 ### Duplicate review
 
-- Plausible manual/provider or cross-provider matches create `duplicate_cases`. The established canonical event remains qualifying; the candidate stays non-qualifying while pending.
-- `merge`: retain both immutable events, point both to one logical canonical event, keep candidate awards reversed.
-- `keep_both` / `keep_separate`: retain both and reconcile the candidate as a rewatch subject to cooldown.
-- `ignore_future_matching`: keep separate and add a user/movie/source-pair ignore rule.
+- Newly inserted provider events matching an active manual event for the same owner, movie, and user-local day create `duplicate_cases`. Cross-provider matching is deferred until provider identity and shared-history semantics are proven. The established manual canonical remains qualifying; each provider candidate stays non-qualifying while pending.
+- `merge`: retain provider provenance as a soft-deleted event linked to the active manual canonical and keep candidate awards reversed.
+- `keep_both`: retain both and reconcile the candidate normally as a rewatch subject to cooldown.
+- `keep_separate`: retain both diary events but permanently exclude the provider candidate from competitive scoring as an unverified-history choice.
+- `ignore_future_matching`: keep both for the current case and add an exact user/movie/local-day fingerprint rule. Source-pair scoping is unnecessary while detection is intentionally manual/provider only.
 - Pending cases never increase competitive progress.
 
 ### Achievements and time
@@ -45,7 +48,7 @@
 - Achievement awards have active/revoked state. Losing the only qualifying basis reverses its ledger award and sets `revoked_at`; re-qualification creates a new score event.
 - Canonical time fields are `watched_at_utc`, `watched_day_local`, and `timezone_used`.
 - Existing data backfills as UTC. Imports preserve their instant and derive local day using the user timezone at import.
-- Timezone changes affect future events only; historical reinterpretation is separate future work.
+- Timezone changes transactionally re-derive historical local days from immutable UTC instants, rebase duplicate fingerprints and ignore rules, and reconcile affected eligibility and static achievements. This was selected during Task 4 so a user's diary has one coherent current timezone projection rather than mixed historical zones.
 
 ## Current Conflicts
 
