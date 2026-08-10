@@ -88,7 +88,7 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 1. Write failing tests for owner creation, private list/read scoping (including no implicit global-admin access), role matrix, keyed token hashing, generic unknown/expired/revoked/exhausted failures, distinct-user max-use enforcement under concurrency, replay-safe acceptance, immutable rejoin episodes, leaving without score deletion, last-owner protections, ownership transfer, CSRF, strict IDs/strings, and safe DTOs.
 2. Run `test/leagues.test.js` and confirm RED.
 3. Implement the service with short transactions and random 256-bit invite secrets hashed with the existing keyed-token pattern. Do not log or persist plaintext tokens.
-4. Add ownership-scoped routes and deterministic error/status contracts. Public invite preview is a rate-limited `POST` receiving the secret in JSON, returns only league name/owner/default mode/approximate size/expiry, sets `Cache-Control: no-store`, and is mounted before authentication. Invite links carry the secret in the URL fragment so it does not enter access logs or referrers.
+4. Add ownership-scoped routes and deterministic error/status contracts. Public invite preview is a rate-limited `POST` receiving the secret in JSON, returns only league name and expiry, sets `Cache-Control: no-store`, and is mounted before authentication. Invite links carry the secret in the URL fragment so it does not enter access logs or referrers.
 5. Run focused tests, full server suite, `git diff --check`, and commit `feat(leagues): add private membership and invites`.
 
 ### Task 3: Immutable season lifecycle

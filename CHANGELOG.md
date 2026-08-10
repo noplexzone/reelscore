@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Competitive season schema 9 with private league ownership, immutable membership episodes, immutable-capacity expiring invite audit, lockable participant snapshots, irreversible cancellation/finalization, frozen archived standings, non-overlapping seasons, source-linked append-only season score events, strict calendar-valid timestamps, canonical legacy-time migration, and immutable effective scoring chronology.
+- Private league services and HTTP APIs for ownership, membership episodes, safe invite preview/acceptance, role management, transfer, and archival.
 - Duplicate review workflow for same-user/manual-provider same-film local-day imports, with explicit per-provider cases, pending score quarantine, ownership-scoped API, atomic/idempotent merge and keep resolutions, timezone-safe scoped ignore rules, audited deletion/timezone cancellations, and a direct Review UI.
 - User-selectable IANA timezones in account settings, with browser-zone detection and private `/api/me` exposure.
 - Competitive-integrity migration 7 with timezone-normalized watch chronology, explicit versioned eligibility, an idempotent legacy score-ledger backfill, reversible-achievement references, and duplicate-review schema; plus migration 8 for explicit per-provider duplicate cases and audited system cancellations.
