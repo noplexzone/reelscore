@@ -6,14 +6,14 @@ import {
   personDetails, personMovieCredits,
 } from "../tmdb.js";
 import { basePoints } from "../scoring.js";
-import { evaluate, progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
-import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notablePeopleInMovie } from "../people.js";
+import { progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
+import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus } from "../people.js";
 import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
-import { scoreWatchEvent, reconcileMovieEligibility } from "../services/scoring-service.js";
+import { reconcileMovieEligibility } from "../services/scoring-service.js";
 import { deleteWatchAndReconcileAchievements } from "../services/achievement-service.js";
 import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
-import { insertWatch } from "../repositories/watch-repository.js";
+import { logManualWatchAndReconcile } from "../services/manual-watch-service.js";
 import { currentStreak } from "../services/streak-service.js";
 import { updateUserSettings } from "../services/user-settings-service.js";
 import { duplicates } from "./duplicates.js";
@@ -316,16 +316,7 @@ api.post("/watches", async (req, res, next) => {
 
     const m = await movieDetails(tmdbId);
 
-    const scoredWatch = db.transaction(() => {
-      const watch = insertWatch({ userId: req.user.id, movie: m });
-      scoreWatchEvent(watch.id);
-      return db.prepare("SELECT id,points,is_rewatch,eligibility_reason FROM watches WHERE id=?").get(watch.id);
-    })();
-
-    const newAchievements = await evaluate(req.user.id, {
-      collection_id: m.belongs_to_collection?.id || null,
-      person_ids: notablePeopleInMovie(m.credits).map((p) => p.id),
-    });
+    const { watch: scoredWatch, achievements: newAchievements } = await logManualWatchAndReconcile(req.user.id, m);
 
     res.json({
       watch: { id: scoredWatch.id, title: m.title, points: scoredWatch.points, isRewatch: !!scoredWatch.is_rewatch, reason: scoredWatch.eligibility_reason },

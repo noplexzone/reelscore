@@ -49,7 +49,7 @@ Legacy migration events preserve the exact stored total even when today's formul
 
 Achievement progress counts unique, non-deleted watches with `qualifies_for_achievement=1`. Losing the only basis revokes the active trophy and appends a compensating ledger event; it does not delete the achievement record. Re-qualification reactivates the record and appends a new award generation.
 
-Collection and filmography metadata is fetched before short write transactions. If required external metadata is unavailable, existing dynamic trophies are retained and duplicate resolution remains pending rather than guessing.
+Collection and filmography metadata is fetched before short write transactions. Manual logging fails without inserting the watch when metadata required for that watch is unavailable, making a retry atomic and safe. Existing dynamic trophies are retained when unrelated metadata is unavailable, and duplicate resolution remains pending rather than guessing.
 
 ## Timezones and streaks
 

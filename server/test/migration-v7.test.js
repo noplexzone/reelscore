@@ -100,3 +100,33 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
   assert.equal(new Set(database.prepare("PRAGMA table_info(watches)").all().map((row) => row.name)).has("watched_at_utc"), false);
   database.close();
 });
+
+
+test("schema-6 automatic snapshot restores and migrates to schema 8", () => {
+  const sourceDir = tempDir("v6-snapshot-source");
+  createExactV6(sourceDir, "build-v6-snapshot");
+  const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
+  assert.equal(migrated.status, 0, migrated.stderr);
+  const backupsDir = path.join(sourceDir, "backups");
+  const snapshots = fs.readdirSync(backupsDir).filter((name) => name.endsWith(".db"));
+  assert.equal(snapshots.length, 1);
+  const snapshotPath = path.join(backupsDir, snapshots[0]);
+  let snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+  assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 6);
+  assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
+  assert.equal(snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='score_events'").get(), undefined);
+  snapshot.close();
+
+  const restoreDir = tempDir("v6-snapshot-restore");
+  fs.copyFileSync(snapshotPath, path.join(restoreDir, "reelscore.db"));
+  const restored = runModule(restoreDir, "restore-v6-to-v8", "module.initializeDatabase();");
+  assert.equal(restored.status, 0, restored.stderr);
+  snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
+  assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 8);
+  assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
+  assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
+  assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
+  snapshot.close();
+});

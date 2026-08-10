@@ -27,6 +27,7 @@ test.after(() => new Promise((resolve) => tmdbStub.close(resolve)));
 const { db } = await import("../src/db.js");
 const { awardScoreEvent, totalScore } = await import("../src/repositories/score-ledger.js");
 const { reconcileAchievements, achievementProgress, deleteWatchAndReconcileAchievements } = await import("../src/services/achievement-service.js");
+const { logManualWatchAndReconcile } = await import("../src/services/manual-watch-service.js");
 
 function makeUser(prefix) {
   return Number(db.prepare("INSERT INTO users (username,password_hash) VALUES (?, 'x')")
@@ -230,4 +231,26 @@ test("watch deletion and achievement reversal roll back together and retry idemp
   assert.ok(db.prepare("SELECT deleted_at FROM watches WHERE id=?").get(watchId).deleted_at);
   assert.ok(achievement(userId, "volume:1").revoked_at);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM score_events WHERE reverses_event_id=?").get(row.score_event_id).c, 1);
+});
+
+
+test("manual logging fails closed on unknown dynamic basis and commits the watch and trophy atomically on retry", async () => {
+  const outageUser = makeUser("manual_dynamic_outage");
+  const unavailable = { id: 9901, title: "Unavailable basis", vote_average: 7, runtime: 120,
+    release_date: "2020-01-01", genres: [{ name: "Drama" }],
+    belongs_to_collection: { id: 999, name: "Unavailable Collection" }, credits: { cast: [], crew: [] } };
+  await assert.rejects(() => logManualWatchAndReconcile(outageUser, unavailable), (error) => error.status === 502);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM watches WHERE user_id=?").get(outageUser).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM score_events WHERE user_id=?").get(outageUser).count, 0);
+
+  const completionUser = makeUser("manual_dynamic_completion");
+  watch(completionUser, { tmdbId: 701, collectionId: 900 });
+  const completingMovie = { id: 702, title: "Collection finale", vote_average: 7, runtime: 120,
+    release_date: "2021-01-01", genres: [{ name: "Drama" }],
+    belongs_to_collection: { id: 900, name: "Test Collection" }, credits: { cast: [], crew: [] } };
+  const result = await logManualWatchAndReconcile(completionUser, completingMovie, { watchedAt: "2026-02-01T12:00:00Z" });
+  assert.equal(result.watch.id > 0, true);
+  assert.ok(result.achievements.some((row) => row.key === "series:900"));
+  assert.equal(achievement(completionUser, "series:900").revoked_at, null);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM score_events WHERE user_id=? AND achievement_id IS NOT NULL").get(completionUser).count > 0, true);
 });

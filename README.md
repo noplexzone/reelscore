@@ -116,8 +116,8 @@ Tests use Node 22's built-in test runner — no extra packages needed.
 ## Pull request workflow
 
 1. Branch off `main`, make changes.
-2. Push — GitHub Actions runs server tests + audit and web build + audit.
-3. Open a pull request; all checks must pass before merge.
+2. Push the branch and open a pull request. GitHub Actions runs server tests/audit and web build/audit when the PR is opened or updated.
+3. All pull-request checks must pass before merge; pushes to `main` run the same checks.
 4. On merge to `main`, the publish job automatically builds and pushes `noplexzone/reelscore:develop` to Docker Hub. Stable semver/latest tags are reserved for promoted releases.
 
 Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
@@ -126,7 +126,7 @@ Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 - `server/` — Node 22 + Express + better-sqlite3. Opaque revocable cookie sessions with CSRF protection. TMDB is proxied server-side with an in-memory cache, so the API key never reaches the browser.
 - `web/` — React 18 + Vite PWA. Installable on mobile (manifest + icon included); same UI serves desktop web. Served by the Express container in production.
-- One container, one SQLite file. No external services beyond TMDB.
+- One application container and one SQLite database. Self-hosted manual logging needs only TMDB; Plex, Trakt, email delivery, and Cloudflare Tunnel are optional integrations selected by deployment mode.
 
 Watches retain manual/Plex/Trakt provenance and immutable provider-event identity. Normal sync is additive and idempotent; exact same-film/local-day manual-provider matches enter duplicate review before scoring.
 

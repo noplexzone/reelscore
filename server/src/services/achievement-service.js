@@ -103,6 +103,8 @@ function genreRule(genre, count, tier) {
 
 async function externalRules(userId, { collectionIds, personIds, requireExternalSuccess = false }) {
   const existing = db.prepare("SELECT key FROM achievements WHERE user_id=?").all(userId).map((row) => row.key);
+  const requiredCollections = new Set(collectionIds);
+  const requiredPeople = new Set(personIds);
   const collections = new Set(collectionIds);
   const people = new Set(personIds);
   for (const key of existing) {
@@ -130,7 +132,7 @@ async function externalRules(userId, { collectionIds, personIds, requireExternal
         metadata: { rule: "series", collection_id: collectionId, required_tmdb_ids: requiredIds },
       });
     } catch {
-      if (requireExternalSuccess) {
+      if (requireExternalSuccess && requiredCollections.has(collectionId)) {
         const error = new Error("Achievement metadata is temporarily unavailable.");
         error.status = 502;
         throw error;
@@ -157,7 +159,7 @@ async function externalRules(userId, { collectionIds, personIds, requireExternal
         metadata: { rule: "filmography", person_id: personId, role: curated.role, required_tmdb_ids: requiredIds },
       });
     } catch {
-      if (requireExternalSuccess) {
+      if (requireExternalSuccess && requiredPeople.has(personId)) {
         const error = new Error("Achievement metadata is temporarily unavailable.");
         error.status = 502;
         throw error;

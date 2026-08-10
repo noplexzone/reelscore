@@ -32,10 +32,15 @@ docker compose exec -e BACKUP="$BACKUP" reelscore node --input-type=module -e '
   import Database from "better-sqlite3";
   const db = new Database(process.env.BACKUP, { readonly: true, fileMustExist: true });
   const integrity = db.pragma("integrity_check")[0]?.integrity_check;
-  const counts = Object.fromEntries(["users", "watches", "achievements", "score_events", "duplicate_cases"].map(
+  const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type=?").all("table").map(row => row.name));
+  const wanted = ["users", "watches", "achievements", "score_events", "duplicate_cases"];
+  const counts = Object.fromEntries(wanted.filter(table => tables.has(table)).map(
     table => [table, db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]
   ));
-  console.log(JSON.stringify({ integrity, counts }));
+  const schemaVersion = tables.has("schema_versions")
+    ? db.prepare("SELECT MAX(version) AS version FROM schema_versions").get().version
+    : 0;
+  console.log(JSON.stringify({ integrity, schemaVersion, counts }));
   db.close();
   if (integrity !== "ok") process.exit(1);
 '
