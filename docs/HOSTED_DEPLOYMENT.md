@@ -47,10 +47,10 @@ Schema migrations are forward-only. Rolling the image back while retaining a new
 5. Run `PRAGMA integrity_check` and verify critical row counts before starting the previous image.
 6. Start the previous image with the restored schema-compatible DB, verify locally, and only then re-enable tunnel routing.
 
-A production/private cutover, container replacement, or restart remains a separately authorized operation.
+A production/private cutover, container replacement, or restart remains a separately authorized operation. The full tested backup and restore procedure is in [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md).
 
 ## Provider sync and reconciliation
 
-Normal sync is additive and never moves, deletes, converts, or recomputes manual rows. Stable connection-scoped event identities make repeat and concurrent imports idempotent. Explicit admin reconciliation previews a chosen placeholder date and updates only selected manual rows; unmatched and unselected rows remain byte-for-byte unchanged.
+Normal sync is additive and never moves, deletes, converts, or recomputes manual rows. Stable connection-scoped event identities make repeat and concurrent imports idempotent. A newly inserted provider event matching an active manual watch for the same owner, TMDB film, and user-local day enters duplicate review before scoring; every provider candidate has its own case. Explicit admin reconciliation previews a chosen placeholder date and updates only selected manual rows; unmatched and unselected rows remain byte-for-byte unchanged.
 
 Plex owner PIN links use local account ID 1. Shared-user links must produce one unambiguous account and persist that account per encrypted connection. Legacy/manual links may use `PLEX_HISTORY_ACCOUNT_ID`.

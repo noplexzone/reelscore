@@ -10,14 +10,16 @@ search → log → score → achievements → friends.
 
 - Base points per watch: `100 × (rating/10)² × clamp(runtime/120, 0.5, 2)`
   — an average film lands around 40–60 pts, an acclaimed 3-hour epic near 150.
-- Rewatches pay **25%** of base. Rewatching the same film within **30 days** pays 0.
-- Achievements pay bonus points on top (see `server/src/achievements.js`).
+- Rewatches outside the 30-day cooldown pay **25%** of base; watches inside it pay 0.
+- Pending, competitively excluded, and deleted watches do not qualify and do not move the cooldown clock.
+- Lifetime totals come from the append-oriented score ledger; corrections append compensating events rather than rewriting awards.
+- Achievements pay bonus points on top. See [`docs/SCORING.md`](docs/SCORING.md) for the complete eligibility and reconciliation contract.
 
 ## Achievements in v0.1
 
 | Category | How it works |
 | --- | --- |
-| Series completion | Watch every released film in a TMDB collection → `250 + 50/film` bonus. Completions are permanent. |
+| Series completion | Watch every released film in a TMDB collection → `250 + 50/film` bonus. Awards revoke if their qualifying basis is lost and reactivate with a new ledger generation when earned again. |
 | Volume | 1 / 10 / 50 / 100 / 250 films logged |
 | Genres | 10 / 25 / 50 films per genre (auto-generated per genre) |
 | Decades | Films from 5 / 8 / 11 different decades |
@@ -67,7 +69,7 @@ case closes with an explicit cancellation reason and scoring is reconciled.
 2. `docker compose up -d --build`
 3. Open `http://<host>:3210`, create an account, log a film.
 
-SQLite lives in `./data` (mapped to `/data` in the container) — back that folder up and you've backed up everything.
+SQLite lives in `./data` (mapped to `/data` in the container). Do not copy only the live database file: use the WAL-consistent, integrity-checked procedure in [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md).
 
 ### Pulling the published image
 
@@ -82,7 +84,7 @@ Stable semver tags (e.g. `0.1.0`) and `latest` are reserved for future promoted 
 
 ### Unraid bind-mount note
 
-The container runs as root by default. The `./data` directory is created by Docker Compose automatically. **Do not configure a non-root UID/GID mapping** in Unraid's container settings for v0.1 unless you have pre-created `./data` with matching ownership — doing so will cause SQLite writes to fail.
+The image runs as UID 99/GID 100. Pre-create the host data directory with matching ownership and writable permissions before first startup. A root-owned or read-only bind mount causes SQLite startup or migration failure.
 
 ### Local development (no Docker)
 
@@ -98,15 +100,15 @@ cd web && npm ci && npm run dev
 ## Testing
 
 ```bash
-# Server unit tests (scoring, auth middleware, route-param validation)
+# Server tests: scoring/ledger, eligibility, migrations, sync, auth, and security
 cd server && npm test
 
 # Web build verification
 cd web && npm run build
 
 # Dependency audits
-cd server && npm audit
-cd web && npm audit
+cd server && npm audit --audit-level=high
+cd web && npm audit --audit-level=high
 ```
 
 Tests use Node 22's built-in test runner — no extra packages needed.
@@ -122,18 +124,18 @@ Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
 ## Architecture
 
-- `server/` — Node 22 + Express + better-sqlite3. JWT auth. TMDB proxied server-side with an in-memory cache (your API key never reaches the browser).
+- `server/` — Node 22 + Express + better-sqlite3. Opaque revocable cookie sessions with CSRF protection. TMDB is proxied server-side with an in-memory cache, so the API key never reaches the browser.
 - `web/` — React 18 + Vite PWA. Installable on mobile (manifest + icon included); same UI serves desktop web. Served by the Express container in production.
 - One container, one SQLite file. No external services beyond TMDB.
 
-Watches carry a `source` column (`manual` today; `plex` / `trakt` reserved) so scrobbling integrations can slot in without a migration.
+Watches retain manual/Plex/Trakt provenance and immutable provider-event identity. Normal sync is additive and idempotent; exact same-film/local-day manual-provider matches enter duplicate review before scoring.
 
 ## Roadmap (next runs)
 
 - Curated collection achievements ("Best Picture winners", editorial lists) with an admin-managed list table
-- Plex webhook + Trakt sync → verified watches
-- Seasonal leaderboards to fight lifetime-score inflation
-- Filmography achievements (directors/actors) via TMDB credits
+- Seasonal leagues and season-scoped score projections
+- Weekly/monthly/seasonal leaderboards and challenges
+- Competition-first dashboard and private league invitations
 - Backdated logging (pick the watch date) and CSV/Letterboxd import
 - Freemium gates: advanced stats, custom lists, profile themes
 
