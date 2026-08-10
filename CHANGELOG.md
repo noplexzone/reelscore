@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Competitive-integrity migration 7 with timezone-normalized watch chronology, explicit versioned eligibility, an idempotent legacy score-ledger backfill, reversible-achievement references, and duplicate-review schema; plus pure IANA time and qualifying-watch policy primitives.
 - Competitive-integrity architecture and phased implementation plan covering qualifying watches, an explainable/reversible score ledger, timezone-aware streaks, duplicate review, seasons, leagues, challenges, and later quality work.
 - Optional authenticator-app TOTP MFA with one-use recovery codes, MFA-aware sign-in, administrator MFA safeguards, and account settings for enrollment, recovery-code rotation, MFA disable, and active-session revocation.
 - Public hosted verified-account foundation: open email/password registration without pre-verification sessions, one-use HMAC-digested verification/reset tokens with exact epoch-millisecond expiry, encrypted durable email outbox jobs, generic resend/reset responses, legacy-account email claim, password-reset session revocation, and verification/reset/claim web flows.

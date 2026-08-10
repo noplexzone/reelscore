@@ -84,11 +84,13 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
     ('bob',   '$2a$10$legacyhash2', '2024-02-01 00:00:00')
   `).run();
 
-  // 2 watches for alice (id=1), 2 for bob (id=2).
+  // Four watches for alice (including zero-point cooldown + paid rewatch), two for bob.
   legacy.prepare(`
     INSERT INTO watches (user_id, tmdb_id, title, points, watched_at) VALUES
     (1, 1000, 'Film A', 50, '2024-01-10 20:00:00'),
     (1, 1001, 'Film B', 45, '2024-01-15 20:00:00'),
+    (1, 1000, 'Film A cooldown', 0, '2024-01-20 20:00:00'),
+    (1, 1000, 'Film A rewatch', 10, '2024-03-20 20:00:00'),
     (2, 1002, 'Film C', 60, '2024-02-10 20:00:00'),
     (2, 1003, 'Film D', 55, '2024-02-15 20:00:00')
   `).run();
@@ -123,9 +125,9 @@ test("migration: original users are preserved", () => {
   assert.equal(users[1].password_hash, "$2a$10$legacyhash2");
 });
 
-test("migration: watches are preserved (4 rows)", () => {
+test("migration: watches are preserved (6 rows)", () => {
   const count = db.prepare("SELECT COUNT(*) c FROM watches").get().c;
-  assert.equal(count, 4);
+  assert.equal(count, 6);
 });
 
 test("migration: achievements are preserved (2 rows)", () => {
@@ -233,7 +235,7 @@ test("migration: verified-account foundation preserves legacy null-email users a
   assert.ok(columns.has("email_normalized"));
   assert.ok(columns.has("email_verified_at"));
   assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE email IS NULL AND email_normalized IS NULL").get().c, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 4);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 6);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_tokens'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='email_jobs'").get());
   assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=5").get());
@@ -249,7 +251,84 @@ test("migration: MFA secrets, one-use recovery codes, challenges, and safe sessi
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mfa_login_challenges'").get());
   assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=6").get());
   assert.equal(db.prepare("SELECT COUNT(*) c FROM users").get().c, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 4);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM watches").get().c, 6);
+});
+
+test("migration 7: adds competitive-integrity columns and records the version", () => {
+  const columns = (table) => new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  assert.ok(columns("users").has("timezone"));
+  for (const column of ["watched_at_utc", "watched_day_local", "timezone_used", "qualifies_for_volume", "qualifies_for_achievement", "qualifies_for_streak", "qualifies_for_season", "eligibility_status", "eligibility_rule_version", "eligibility_reason", "deleted_at", "deleted_reason", "logical_canonical_watch_id"]) assert.ok(columns("watches").has(column), `watches.${column}`);
+  for (const column of ["score_event_id", "revoked_at", "revocation_reason"]) assert.ok(columns("achievements").has(column));
+  assert.ok(db.prepare("SELECT 1 FROM schema_versions WHERE version=7").get());
+});
+
+test("migration 7: creates ledger and duplicate-review tables with foreign keys and indexes", () => {
+  for (const table of ["score_events", "duplicate_cases", "duplicate_ignore_rules"]) assert.ok(tableExists(table), table);
+  const scoreColumns = new Set(db.prepare("PRAGMA table_info(score_events)").all().map((row) => row.name));
+  for (const column of ["id", "event_key", "user_id", "watch_id", "achievement_id", "season_id", "category", "points", "rule_version", "metadata_json", "created_at", "reversed_at", "reverses_event_id"]) assert.ok(scoreColumns.has(column), `score_events.${column}`);
+  const fkTargets = new Set(db.prepare("PRAGMA foreign_key_list(score_events)").all().map((row) => row.table));
+  for (const table of ["users", "watches", "achievements"]) assert.ok(fkTargets.has(table), `FK to ${table}`);
+  const indexes = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((row) => row.name));
+  for (const name of ["idx_score_events_user_chronology", "idx_score_events_watch", "idx_score_events_achievement", "idx_watches_competitive_timeline", "idx_watches_streak_day", "idx_duplicate_cases_user_status", "idx_duplicate_cases_pending_fingerprint"]) assert.ok(indexes.has(name), name);
+  assert.deepEqual(db.pragma("foreign_key_check"), []);
+});
+
+test("migration 7: enforces cross-user ledger, achievement, and duplicate ownership", () => {
+  assert.throws(() => db.prepare(`INSERT INTO score_events
+    (event_key,user_id,watch_id,category,points,rule_version) VALUES ('test/cross-watch',1,5,'test',1,'test-v1')`).run(), /owner mismatch/i);
+
+  const bobAchievementEvent = db.prepare("SELECT id FROM score_events WHERE achievement_id=2").get().id;
+  assert.throws(() => db.prepare("UPDATE achievements SET score_event_id=? WHERE id=1").run(bobAchievementEvent), /achievement score event mismatch/i);
+
+  db.exec("SAVEPOINT achievement_owner_test");
+  try {
+    db.prepare("UPDATE achievements SET score_event_id=NULL WHERE id=1").run();
+    assert.throws(() => db.prepare("UPDATE achievements SET user_id=2 WHERE id=1").run(), /achievement score event mismatch/i);
+  } finally {
+    db.exec("ROLLBACK TO achievement_owner_test; RELEASE achievement_owner_test");
+  }
+
+  assert.throws(() => db.prepare(`INSERT INTO duplicate_cases
+    (user_id,fingerprint,canonical_watch_id,candidate_watch_id) VALUES (1,'cross-user',1,5)`).run(), /owner mismatch/i);
+
+  db.prepare(`INSERT INTO duplicate_cases
+    (user_id,fingerprint,canonical_watch_id,candidate_watch_id) VALUES (1,'same-user',1,2)`).run();
+  assert.throws(() => db.prepare("UPDATE watches SET user_id=2 WHERE id=2").run(), /dependent competitive records/i);
+
+  const watchEvent = db.prepare("SELECT id FROM score_events WHERE watch_id=1").get().id;
+  assert.throws(() => db.prepare("UPDATE score_events SET user_id=2 WHERE id=?").run(watchEvent), /owner mismatch/i);
+});
+
+test("migration 7: backfills UTC chronology and eligibility from stored history", () => {
+  const rows = db.prepare(`SELECT id, watched_at_utc, watched_day_local, timezone_used, qualifies_for_volume, qualifies_for_achievement, qualifies_for_streak, qualifies_for_season, eligibility_status, eligibility_rule_version, eligibility_reason, logical_canonical_watch_id FROM watches ORDER BY id`).all();
+  assert.equal(rows.length, 6);
+  assert.deepEqual(rows[0], { id: 1, watched_at_utc: "2024-01-10T20:00:00.000Z", watched_day_local: "2024-01-10", timezone_used: "UTC", qualifies_for_volume: 1, qualifies_for_achievement: 1, qualifies_for_streak: 1, qualifies_for_season: 1, eligibility_status: "legacy_assumed", eligibility_rule_version: "competition-v1-backfill", eligibility_reason: "legacy_canonical_first_watch", logical_canonical_watch_id: 1 });
+  assert.deepEqual(rows.slice(2, 4).map((row) => [row.qualifies_for_volume, row.qualifies_for_achievement, row.qualifies_for_streak, row.qualifies_for_season, row.eligibility_status, row.eligibility_rule_version, row.logical_canonical_watch_id]), [
+    [0, 0, 0, 0, "legacy_assumed", "competition-v1-backfill", 1],
+    [0, 0, 1, 1, "legacy_assumed", "competition-v1-backfill", 1],
+  ]);
+});
+
+test("migration 7: legacy ledger backfill preserves exact totals without duplication", () => {
+  const originalTotal = 50 + 45 + 0 + 10 + 60 + 55 + 100 + 50;
+  const ledger = db.prepare("SELECT * FROM score_events ORDER BY id").all();
+  assert.equal(ledger.length, 8);
+  assert.equal(ledger.reduce((sum, row) => sum + row.points, 0), originalTotal);
+  assert.deepEqual(db.prepare("SELECT user_id, SUM(points) total FROM score_events GROUP BY user_id ORDER BY user_id").all(), [
+    { user_id: 1, total: 205 },
+    { user_id: 2, total: 165 },
+  ]);
+  assert.ok(ledger.every((row) => row.rule_version === "legacy-v1"));
+  assert.equal(new Set(ledger.filter((row) => row.watch_id).map((row) => row.watch_id)).size, 6);
+  assert.equal(new Set(ledger.filter((row) => row.achievement_id).map((row) => row.achievement_id)).size, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM achievements WHERE score_event_id IS NOT NULL").get().c, 2);
+  const watchMetadata = ledger.filter((row) => row.watch_id).map((row) => JSON.parse(row.metadata_json));
+  assert.ok(watchMetadata.every((meta) => meta.backfilled === true && Object.hasOwn(meta, "is_rewatch")));
+  assert.equal(db.prepare("SELECT points FROM score_events WHERE watch_id=3").get().points, 0);
+  assert.ok(ledger.every((row) => row.event_key.startsWith("legacy/")));
+  runMigrations({ skipBackup: true });
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM score_events").get().c, 8);
+  assert.equal(db.prepare("SELECT SUM(points) s FROM score_events").get().s, originalTotal);
 });
 
 test("backup includes committed WAL rows when a reader prevents checkpointing", async () => {
