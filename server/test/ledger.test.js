@@ -35,9 +35,25 @@ test("awardScoreEvent is idempotent and rejects an immutable event-key conflict"
   const first = awardScoreEvent(input);
   const repeated = awardScoreEvent(input);
   assert.equal(repeated.id, first.id);
+  assert.equal(first.effective_at, first.created_at);
   assert.equal(eventsFor(userId).length, 1);
   assert.throws(() => awardScoreEvent({ ...input, points: 26 }), /event key conflict/i);
   assert.throws(() => awardScoreEvent({ ...input, createdAt: "2026-01-02T00:00:00Z" }), /event key conflict/i);
+});
+
+test("awardScoreEvent stores immutable effective scoring time", () => {
+  const userId = makeUser("effective");
+  const input = { eventKey: `test/effective/${userId}`, userId, category: "test_bonus", points: 5,
+    ruleVersion: "test-v1", metadata: {}, createdAt: "2026-03-01T00:00:00Z", effectiveAt: "2026-01-15T12:00:00Z" };
+  const event = awardScoreEvent(input);
+  assert.equal(event.created_at, "2026-03-01T00:00:00.000Z");
+  assert.equal(event.effective_at, "2026-01-15T12:00:00.000Z");
+  assert.equal(awardScoreEvent(input).id, event.id);
+  assert.throws(() => awardScoreEvent({ ...input, effectiveAt: "2026-01-16T12:00:00Z" }), /event key conflict/i);
+  assert.throws(() => db.prepare("UPDATE score_events SET effective_at='2026-01-16T12:00:00.000Z' WHERE id=?").run(event.id), /effective time.*immutable/i);
+  assert.throws(() => db.prepare(`INSERT INTO score_events
+    (event_key,user_id,category,points,rule_version,effective_at)
+    VALUES (?,?,?,?,?,'not-a-time')`).run(`test/bad-effective/${userId}`,userId,'test_bonus',1,'test-v1'), /effective time.*invalid/i);
 });
 
 test("ledger boundaries reject invalid identifiers, strings, timestamps, and reversal input", () => {
@@ -58,6 +74,7 @@ test("ledger boundaries reject invalid identifiers, strings, timestamps, and rev
     { ...valid, category: undefined },
     { ...valid, ruleVersion: "  " },
     { ...valid, createdAt: "01/10/2026 20:00:00" },
+    { ...valid, effectiveAt: "01/10/2026 20:00:00" },
   ]) assert.throws(() => awardScoreEvent(invalid), /positive integer|integer number|non-empty string|timestamp|UTC instant/i);
   assert.throws(() => reverseScoreEvents({ userId, eventIds: [0], reason: "bad" }), /positive integer/i);
   assert.throws(() => reverseScoreEvents({ userId, eventIds: [], reason: "bad", reversedAt: "tomorrow" }), /timestamp|UTC instant/i);
@@ -76,13 +93,50 @@ test("reverseScoreEvents is atomic and idempotent while lifetime totals include 
   assert.deepEqual(eventsFor(userId).map((row) => row.points), [40, -40]);
 });
 
+test("late reversals retain the original effective scoring period", () => {
+  const userId = makeUser("late_reverse");
+  const award = awardScoreEvent({ eventKey: `test/late-reverse/${userId}`, userId, category: "test_bonus", points: 40,
+    ruleVersion: "test-v1", metadata: {}, createdAt: "2026-01-03T00:00:00Z", effectiveAt: "2026-01-01T00:00:00Z" });
+  const [reversal] = reverseScoreEvents({ userId, eventIds: [award.id], reason: "late correction", reversedAt: "2026-04-01T00:00:00Z" });
+  assert.equal(reversal.created_at, "2026-04-01T00:00:00.000Z");
+  assert.equal(reversal.effective_at, award.effective_at);
+});
+
 test("lifetime totals remain separate from future season rows and expose a category breakdown", () => {
   const userId = makeUser("season");
-  awardScoreEvent({ eventKey: `test/lifetime/${userId}`, userId, category: "watch_first", points: 49, ruleVersion: "test-v1", metadata: {} });
-  awardScoreEvent({ eventKey: `test/season/${userId}`, userId, seasonId: 9, category: "watch_first", points: 12, ruleVersion: "test-v1", metadata: {} });
+  const watchId = insertWatch(userId, { watchedAt: "2030-01-02T00:00:00.000Z" });
+  const source = awardScoreEvent({ eventKey: `test/lifetime/${userId}`, userId, watchId, category: "watch_first", points: 49,
+    ruleVersion: "test-v1", metadata: {}, effectiveAt: "2030-01-02T00:00:00.000Z" });
+  const leagueId = Number(db.prepare("INSERT INTO leagues(name,timezone,owner_user_id,created_by_user_id) VALUES ('Future League','UTC',?,?)")
+    .run(userId, userId).lastInsertRowid);
+  const membershipId = Number(db.prepare("INSERT INTO league_memberships(league_id,user_id,role,joined_at) VALUES (?,?,'member','2029-01-01T00:00:00.000Z')")
+    .run(leagueId, userId).lastInsertRowid);
+  const seasonId = Number(db.prepare(`INSERT INTO seasons
+    (league_id,name,mode,timezone,rule_version,starts_at,ends_at,created_by_user_id)
+    VALUES (?,'Future Season','casual','UTC','test-v1','2030-01-01T00:00:00.000Z','2030-02-01T00:00:00.000Z',?)`)
+    .run(leagueId, userId).lastInsertRowid);
+  const seasonMemberId = Number(db.prepare("INSERT INTO season_members(season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (?,?,?,'season-user','2030-01-01T00:00:00.000Z')")
+    .run(seasonId, membershipId, userId).lastInsertRowid);
+  db.prepare(`INSERT INTO score_events
+    (event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,effective_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(`season/${seasonId}/watch-event/${source.id}`, userId, watchId, seasonId, source.id,
+      seasonMemberId, "watch_first", 12, "test-v1", source.effective_at);
   assert.equal(totalScore(userId), 49);
-  assert.equal(totalScore(userId, { seasonId: 9 }), 12);
+  assert.equal(totalScore(userId, { seasonId }), 12);
   assert.deepEqual(scoreBreakdown(userId), [{ category: "watch_first", points: 49 }]);
+  const projection = db.prepare("SELECT * FROM score_events WHERE season_id=? AND reverses_event_id IS NULL").get(seasonId);
+  const [projectionReversal] = reverseScoreEvents({ userId, eventIds: [projection.id], reason: "season correction", reversedAt: "2030-03-01T00:00:00Z" });
+  assert.equal(projectionReversal.season_member_id, seasonMemberId);
+  assert.equal(projectionReversal.projection_source_event_id, source.id);
+  assert.equal(projectionReversal.effective_at, projection.effective_at);
+  assert.equal(totalScore(userId, { seasonId }), 0);
+  assert.equal(reverseScoreEvents({ userId, eventIds: [projection.id], reason: "season correction" })[0].id, projectionReversal.id);
+
+  const native = awardScoreEvent({ eventKey: `season/${seasonId}/challenge/test`, userId, seasonId, seasonMemberId,
+    category: "challenge_bonus", points: 5, ruleVersion: "test-v1", metadata: {}, effectiveAt: "2030-01-03T00:00:00Z" });
+  const [nativeReversal] = reverseScoreEvents({ userId, eventIds: [native.id], reason: "challenge basis lost" });
+  assert.equal(nativeReversal.season_member_id, seasonMemberId);
+  assert.equal(nativeReversal.projection_source_event_id, null);
 });
 
 test("watch scoring records first, zero-point cooldown, and paid rewatch explanations from stored snapshots", () => {

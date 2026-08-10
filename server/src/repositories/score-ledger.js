@@ -37,30 +37,35 @@ function normalizedInput(input) {
     watch_id: positiveId(input.watchId, "watchId", { optional: true }),
     achievement_id: positiveId(input.achievementId, "achievementId", { optional: true }),
     season_id: positiveId(input.seasonId, "seasonId", { optional: true }),
+    projection_source_event_id: positiveId(input.projectionSourceEventId, "projectionSourceEventId", { optional: true }),
+    season_member_id: positiveId(input.seasonMemberId, "seasonMemberId", { optional: true }),
     category: requiredString(input.category, "category"),
     points,
     rule_version: requiredString(input.ruleVersion, "ruleVersion"),
     metadata_json: metadataJson(input.metadata),
     created_at: input.createdAt == null ? null : normalizeUtcInstant(input.createdAt),
+    effective_at: input.effectiveAt == null ? null : normalizeUtcInstant(input.effectiveAt),
     reverses_event_id: positiveId(input.reversesEventId, "reversesEventId", { optional: true }),
   };
 }
 
 function sameImmutableEvent(row, expected) {
-  return ["event_key", "user_id", "watch_id", "achievement_id", "season_id", "category", "points", "rule_version", "metadata_json", "created_at", "reverses_event_id"]
+  return ["event_key", "user_id", "watch_id", "achievement_id", "season_id", "projection_source_event_id", "season_member_id", "category", "points", "rule_version", "metadata_json", "created_at", "effective_at", "reverses_event_id"]
     .every((key) => row[key] === expected[key]);
 }
 
 export function awardScoreEvent(input) {
   const event = normalizedInput(input);
   const insertedCreatedAt = event.created_at ?? new Date().toISOString();
+  const insertedEffectiveAt = event.effective_at ?? insertedCreatedAt;
   db.prepare(`INSERT INTO score_events
-      (event_key,user_id,watch_id,achievement_id,season_id,category,points,rule_version,metadata_json,created_at,reverses_event_id)
-      VALUES (@event_key,@user_id,@watch_id,@achievement_id,@season_id,@category,@points,@rule_version,@metadata_json,@created_at,@reverses_event_id)
+      (event_key,user_id,watch_id,achievement_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,metadata_json,created_at,effective_at,reverses_event_id)
+      VALUES (@event_key,@user_id,@watch_id,@achievement_id,@season_id,@projection_source_event_id,@season_member_id,@category,@points,@rule_version,@metadata_json,@created_at,@effective_at,@reverses_event_id)
       ON CONFLICT(event_key) DO NOTHING`)
-    .run({ ...event, created_at: insertedCreatedAt });
+    .run({ ...event, created_at: insertedCreatedAt, effective_at: insertedEffectiveAt });
   const row = db.prepare("SELECT * FROM score_events WHERE event_key=?").get(event.event_key);
-  const expected = { ...event, created_at: event.created_at ?? row?.created_at };
+  const expected = { ...event, created_at: event.created_at ?? row?.created_at,
+    effective_at: event.effective_at ?? event.created_at ?? row?.effective_at };
   if (!row || !sameImmutableEvent(row, expected)) {
     throw new Error(`Score event key conflict: ${event.event_key}`);
   }
@@ -92,6 +97,8 @@ export function reverseScoreEvents({ userId, eventIds, reason, reversedAt = new 
       watchId: original.watch_id,
       achievementId: original.achievement_id,
       seasonId: original.season_id,
+      projectionSourceEventId: original.projection_source_event_id,
+      seasonMemberId: original.season_member_id,
       category: original.category,
       points: -original.points,
       ruleVersion: original.rule_version,
@@ -102,6 +109,7 @@ export function reverseScoreEvents({ userId, eventIds, reason, reversedAt = new 
         original_points: original.points,
       },
       createdAt: instant,
+      effectiveAt: original.effective_at,
       reversesEventId: original.id,
     });
   }));

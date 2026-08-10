@@ -48,21 +48,21 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 
 **Files:**
 - Modify: `server/src/db.js`
-- Modify: `server/test/migration.test.js`
+- Modify: `server/src/repositories/score-ledger.js`
+- Modify: `server/test/ledger.test.js`
 - Modify: `server/test/migration-v7.test.js`
-- Modify: `server/package.json`
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
 - Produces tables `leagues`, `league_memberships`, `league_invites`, `league_invite_uses`, `seasons`, and `season_members`.
-- Adds nullable `projection_source_event_id REFERENCES score_events(id)` and `season_member_id REFERENCES season_members(id)` columns to `score_events`; additive triggers validate existing nullable `season_id` values without rebuilding the self-referential ledger table.
+- Adds nullable `effective_at`, `projection_source_event_id REFERENCES score_events(id)`, and `season_member_id REFERENCES season_members(id)` columns to `score_events`; migration converts each legacy `created_at` instant into canonical UTC `effective_at`, while additive triggers validate existing nullable `season_id` values without rebuilding the self-referential ledger table. `leagues.owner_user_id` is the sole owner authority, `season_members.username_snapshot` preserves archived standings identity, and `seasons.participants_locked_at` seals each materialized participant set.
 - Produces schema version 9 and ownership/season triggers consumed by later services.
 
 **Steps:**
-1. Add failing migration tests for fresh schema 9, exact schema-8 upgrade, backup creation, idempotency, check constraints, one active membership episode and owner per league/user, invite-use capacity, non-overlapping seasons, participant/source ownership, cross-user/cross-league score-event rejection, unchanged lifetime totals, and replacement of the legacy test fixture that inserts an orphan `season_id=9`.
+1. Add failing migration tests for fresh schema 9, exact schema-8 upgrade, backup creation, idempotency, check constraints, authoritative owner identity and protected owner membership, one active membership episode per league/user, invite-use capacity, non-overlapping seasons, participant/source ownership, snapshotted participant identity, effective-time backfill/immutability, cross-user/cross-league score-event rejection, unchanged lifetime totals, and replacement of the legacy test fixture that inserts an orphan `season_id=9`.
 2. Run focused migration tests and confirm they fail because schema 9 is absent.
-3. Implement `migration9()`, advance `latestVersion`/default target to 9, and preserve all schema-8 rows byte-for-byte except the additive nullable column.
-4. Add indexes for active membership/owner, season chronology, invite lookup/use, participants, and season score chronology. Add triggers for owner membership, non-overlapping membership episodes/seasons, season ownership, immutable started-season settings, source-event user/watch consistency, and season-row participant/league consistency. Fail migration on any pre-existing non-null orphan `season_id` rather than rewriting it.
+3. Implement `migration9()`, advance `latestVersion`/default target to 9, preserve every pre-existing schema-8 column byte-for-byte, and backfill only canonical `effective_at` from each row's immutable `created_at`; reject impossible legacy instants atomically.
+4. Add indexes for active membership, source-event projection uniqueness, season chronology by `effective_at`, invite lookup/use, participants, and season score chronology. Add triggers for protected owner membership/transfer target, immutable membership episodes and invite-use audit rows, non-overlapping memberships/seasons, strict calendar-valid timestamps, append-only score identity, archive-not-delete league/season/invite lifecycle, insert-forbidden pre-applied lifecycle states, irreversible cancellation/finalization with frozen standings and participant sets, immutable started-season settings, locked participant sets with one-way cutoffs, source-event user/watch consistency, and season-row participant/league consistency. Fail migration on any pre-existing non-null orphan `season_id`. League creation must insert the league and owner membership in one service transaction because SQLite has no deferred assertion for the transient circular invariant.
 5. Run focused migrations, full server suite, `git diff --check`, and commit `feat(leagues): add competitive season schema`.
 
 ### Task 2: Private leagues, roles, membership episodes, and invite links
@@ -112,34 +112,51 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 3. Implement lifecycle validation/service and routes. Use normalized UTC instants and database transactions; derive status from immutable times plus explicit cancellation/finalization rather than trusting client status.
 4. Run focused and full server tests, `git diff --check`, and commit `feat(seasons): add immutable league competitions`.
 
-### Task 4: Season-scoped watch projection and reconciliation
+### Task 4A: Season projection engine
 
-**Objective:** Project qualifying active lifetime watch awards into every eligible season and reverse projections whenever their basis disappears.
+**Objective:** Derive idempotent season watch awards from active lifetime source events without wiring application ingress yet.
 
 **Files:**
 - Create: `server/src/services/season-scoring-service.js`
 - Create: `server/test/season-scoring.test.js`
+- Modify: `server/src/repositories/score-ledger.js`
+- Modify: `server/package.json`
+
+**Interfaces:**
+- `reconcileSeasonScoresForUser(userId, { tmdbIds?, seasonIds? })` and bounded `reconcileSeasonBatch(seasonId, { afterUserId?, limit? })`.
+- Deterministic key `season/<seasonId>/watch-event/<sourceEventId>` with explicit `projection_source_event_id` and `season_member_id`.
+- Provider-evidence predicate: direct provider source or preserved merged-provider provenance for a manual canonical.
+
+**Steps:**
+1. Write failing tests for Casual/Verified/Challenge qualification, direct and merged provider proof, participant snapshots/cutoffs, exact half-open boundaries, `effective_at`, cooldown zero rows, rewatch rows, reissued lifetime sources, cross-league isolation, idempotency, and finalized freeze.
+2. Implement full affected-movie desired-set reconciliation from active lifetime watch events and stored watch/provenance snapshots. Append missing source projections and compensating reversals; never edit awards or sum lifetime rows as season totals.
+3. Run focused/integrity/migration/full suites and commit `feat(seasons): add season score projection engine`.
+
+### Task 4B: Transactional reconciliation ingress and bounded repair
+
+**Objective:** Make every competitive mutation reconcile season projections atomically and provide an auditable recovery path.
+
+**Files:**
+- Create: `server/test/season-scoring-integration.test.js`
 - Modify: `server/src/services/scoring-service.js`
 - Modify: `server/src/services/manual-watch-service.js`
 - Modify: `server/src/services/duplicate-service.js`
-- Modify: `server/src/services/duplicate-state-service.js` only where its transaction must call the projector
+- Modify: `server/src/services/duplicate-state-service.js`
+- Modify: `server/src/services/user-settings-service.js`
+- Modify: `server/src/services/season-service.js`
+- Modify: `server/src/services/league-service.js`
 - Modify: `server/src/sync.js`
 - Modify: `server/src/routes/api.js` deletion path
-- Modify: `server/src/repositories/score-ledger.js`
+- Modify: `server/src/routes/leagues.js`
 - Modify: `server/package.json`
 - Modify: `CHANGELOG.md`
 
-**Interfaces:**
-- `reconcileSeasonScoresForUser(userId, { watchIds?, seasonIds? })` and bounded `reconcileSeason(seasonId)`.
-- Deterministic generation key `season/<seasonId>/watch/<watchId>/<generation>` with explicit `projection_source_event_id` and `season_member_id` references.
-- Provider-evidence predicate: direct provider source or active merged provider provenance for a manual canonical.
-
 **Steps:**
-1. Write failing tests covering Casual/Verified/Challenge mode qualification, direct provider proof, preserved merged-provider proof, immutable provider evidence after disconnect, participant snapshots/cutoffs, exact season boundaries, late imports during finalizing, finalized freeze, cooldown zero rows, rewatch rows, deletion, duplicate pending/resolution, timezone changes, reissued lifetime awards across boundaries, verification-only provider updates when `imported===0`, overlapping seasons in different leagues, idempotent retries, source-event conflicts, and transaction rollback.
-2. Confirm RED in the focused season-scoring suite.
-3. Implement desired-set reconciliation for the entire affected movie chronology using only active lifetime watch events, season participants, and stored watch/provenance snapshots. Append missing rows; reverse undesired rows before finalization; never edit an award or sum lifetime rows for a season. User timezone changes never move season membership.
-4. Wire reconciliation into existing competitive mutation transactions. Keep external metadata fetches outside write transactions.
-5. Run focused tests, all integrity/duplicate/migration tests, full suite, `git diff --check`, and commit `feat(seasons): project qualifying watch awards`.
+1. Add rollback/idempotency tests for manual logs, provider imports including verification-only updates when `imported===0`, duplicate pending/resolution, watch deletion, timezone/eligibility recalculation, membership departure, season activation/finalization, and ownership-scoped repair.
+2. Enforce finalizing ingress: after `ends_at`, accept only provider attestations received before the 72-hour deadline whose watched instant is in range, plus resolutions of duplicate cases created before `ends_at`; exclude post-end manual creation. Finalized seasons reject all repair.
+3. Wire reconciliation inside the same immediate transaction as each mutation; keep external metadata calls outside write transactions. Reconcile the entire affected TMDB chronology because a late watch can reissue later lifetime awards across season boundaries.
+4. Add a rate-limited owner/admin `POST /api/leagues/:leagueId/seasons/:seasonId/reconcile` accepting bounded cursor/limit input, returning the next cursor and counts, and writing actor/bounds/result audit metadata.
+5. Run focused integration, duplicate, migration, and full suites; commit `feat(seasons): reconcile every competitive mutation`.
 
 ### Task 5: League shell and deterministic leaderboards
 
@@ -159,7 +176,7 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 
 **Interfaces:**
 - `getLeaderboard(userId, leagueId, { seasonId, period, cursor, limit })`.
-- Rows include `rank`, `previous_rank`, `rank_change`, `points`, `distance_to_next`, `qualifying_movie_count`, member status, and safe user identity; response separately includes `current_user` when outside the page.
+- Rows include `rank`, `previous_rank`, `rank_change`, `points`, `distance_to_next`, `qualifying_movie_count`, member status, and snapshotted safe identity for season boards; response separately includes `current_user` when outside the page. Weekly/monthly compare to the immediately preceding clipped calendar period, seasonal to the previous finalized league season, and lifetime returns null previous rank/change.
 - React pages consume `/api/leagues` contracts with no nested horizontal gesture scrolling.
 
 **Steps:**
@@ -168,30 +185,49 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 3. Build poster-first league list/detail pages with clear active-season score/rank, compact member board, invite creation/acceptance, season controls for authorized roles, serialized mutations, and responsive vertical actions.
 4. Build the web app, run server focused/full suites, `git diff --check`, and commit `feat(leagues): add competitive leaderboards`.
 
-### Task 6: Challenge assignments, completion, and bonuses
+### Task 6A: Challenge schema, assignments, and strict rule evaluation
 
-**Objective:** Add auditable season challenge definitions and append-oriented bonus scoring for the six initial rule families.
+**Objective:** Persist auditable user-specific challenge assignments and deterministically evaluate six versioned rule families in Challenge-mode seasons only.
 
 **Files:**
-- Modify: `server/src/db.js` with schema 10 only if challenge tables are intentionally separated from schema 9 after Task 1 review
+- Modify: `server/src/db.js` with additive schema 10
 - Create: `server/src/services/challenge-service.js`
 - Create: `server/test/challenges.test.js`
 - Modify: `server/src/routes/leagues.js`
-- Modify: `server/src/services/season-scoring-service.js`
-- Modify: `web/src/pages/League.jsx`
-- Modify: `web/src/styles.css`
 - Modify: `server/package.json`
-- Modify: `CHANGELOG.md`
 
-**Interfaces:**
-- Challenge rule snapshots for `release_year`, `genre`, `collection`, `runtime`, `recommendation`, and `league_unique`.
-- Assignment/completion records link league, season, user, basis watch, and active `challenge_bonus` score event.
+**Rule schemas:**
+- `release_year`: `{version:1,year}`; bounded integer year.
+- `genre`: `{version:1,genre_name}`; normalized 1-64 character name matched against stored genres.
+- `collection`: `{version:1,collection_id,required_count}`; positive ID and count 2-10 distinct films.
+- `runtime`: `{version:1,minimum_minutes,maximum_minutes?}`; integer 1-1000 with ordered optional maximum.
+- `recommendation`: `{version:1,tmdb_id}`; positive movie ID.
+- `league_unique`: `{version:1}`; exactly one participant has an active qualifying projection for that TMDB ID.
+- Definitions have integer bonus points 1-1000. Unknown/missing keys, versions, and modes are rejected.
 
 **Steps:**
-1. Write failing schema/service tests for strict rule validation, role permissions, assignment ownership, stored-metadata evaluation, one completion per assignment/basis generation, league-unique revocation when uniqueness is lost, rollback, and idempotent bonus reversal/reactivation.
-2. Confirm RED; add additive migration if required and implement challenge reconciliation.
-3. Add dashboard challenge cards showing rule, progress, points, completion basis, and season status without slowing watch logging.
-4. Run focused/full tests and web build, then commit `feat(challenges): add season bonus objectives`.
+1. Add migration/service tests for ownership, Challenge-mode restriction, strict JSON validation, immutable user assignments, deterministic earliest basis, stored-metadata evaluation, and cross-league rejection.
+2. Implement additive tables, validators, owner/admin assignment routes, and read DTOs without bonus events yet.
+3. Run focused/migration/full tests and commit `feat(challenges): add auditable season objectives`.
+
+### Task 6B: Challenge completion ledger and dashboard
+
+**Objective:** Reconcile assignment completion and append/reverse season bonus events, then expose progress in the league UI.
+
+**Files:**
+- Modify: `server/src/services/challenge-service.js`
+- Modify: `server/src/services/season-scoring-service.js`
+- Modify: `server/src/routes/leagues.js`
+- Modify: `server/test/challenges.test.js`
+- Modify: `web/src/pages/League.jsx`
+- Modify: `web/src/styles.css`
+- Modify: `CHANGELOG.md`
+
+**Steps:**
+1. Test one active completion per assignment/basis generation, deterministic reactivation, rollback, basis deletion, finalization freeze, and league-unique revocation when a second member qualifies.
+2. Append `challenge_bonus` rows with deterministic assignment-generation keys and compensating reversals; never edit score rows.
+3. Add responsive challenge cards showing rule, progress, points, completion basis, and season status without blocking watch logging.
+4. Run focused/full tests and web build; commit `feat(challenges): score season bonus objectives`.
 
 ### Task 7: Integration, documentation, and acceptance artifact
 
