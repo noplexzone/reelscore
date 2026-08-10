@@ -100,6 +100,13 @@ async function boundedLookup(hostname, policy) {
   return records[0];
 }
 
+export function pinnedLookup(resolved) {
+  return (_hostname, options, callback) => {
+    if (options?.all) return callback(null, [resolved]);
+    return callback(null, resolved.address, resolved.family);
+  };
+}
+
 export async function safeProviderFetch(rawUrl, options = {}, settings = {}) {
   const url = new URL(rawUrl);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new Error("Provider URL is invalid.");
@@ -129,7 +136,7 @@ export async function safeProviderFetch(rawUrl, options = {}, settings = {}) {
       method: options.method || "GET",
       headers: { Connection: "close", ...(options.headers || {}) },
       signal: options.signal,
-      lookup: (_hostname, _opts, callback) => callback(null, resolved.address, resolved.family),
+      lookup: pinnedLookup(resolved),
       servername: url.hostname,
     }, (res) => {
       if ((res.statusCode || 0) >= 300 && (res.statusCode || 0) < 400) { res.resume(); clearTimeout(overall); return fail(new Error("Provider redirect refused.")); }

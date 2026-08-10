@@ -79,6 +79,20 @@ test("resource URI parsing rejects credentials and non-http schemes without gran
   assert.equal(providers.validateDiscoveredPlexUri("https://user:pass@plex.example"), null);
 });
 
+test("pinned provider DNS lookup honors Node's all-address callback contract", () => {
+  const resolved = { address: "203.0.113.10", family: 4 };
+  const lookup = providers.pinnedLookup(resolved);
+  lookup("plex.tv", { all: true }, (error, addresses) => {
+    assert.ifError(error);
+    assert.deepEqual(addresses, [resolved]);
+  });
+  lookup("plex.tv", {}, (error, address, family) => {
+    assert.ifError(error);
+    assert.equal(address, resolved.address);
+    assert.equal(family, resolved.family);
+  });
+});
+
 test("provider transport refuses redirects, forbidden metadata addresses, oversized bodies, and overall timeout", async () => {
   const localPolicy = { allowedOrigins: [origin], allowedPrivateOrigins: [origin], allowTestLoopback: true, timeoutMs: 100, maxBodyBytes: 64 };
   await assert.rejects(() => providers.safeProviderFetch(`${origin}/redirect`, {}, localPolicy), /redirect/i);
