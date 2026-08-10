@@ -202,17 +202,18 @@ test("later TMDB metadata changes cannot alter an existing ledger award snapshot
 });
 
 
-test("legacy permanent achievement unlocks append compatibility ledger awards", async () => {
+test("runtime achievement unlocks append achievement ledger awards", async () => {
   const userId = makeUser("achievement_compat");
-  insertWatch(userId, { tmdbId: 123 });
+  const watchId = insertWatch(userId, { tmdbId: 123 });
+  scoreWatchEvent(watchId);
   const unlocked = await evaluate(userId, { collection_id: null, person_ids: [] });
   assert.ok(unlocked.some((achievement) => achievement.key === "volume:1"));
   const achievement = db.prepare("SELECT * FROM achievements WHERE user_id=? AND key='volume:1'").get(userId);
   const event = db.prepare("SELECT * FROM score_events WHERE id=?").get(achievement.score_event_id);
   assert.equal(event.achievement_id, achievement.id);
-  assert.equal(event.category, "legacy_achievement");
+  assert.equal(event.category, "achievement");
   assert.equal(event.points, 25);
-  assert.equal(totalScore(userId), 25);
+  assert.equal(totalScore(userId), 74);
 });
 
 test("achievement progress projections exclude soft-deleted watches", () => {
@@ -220,7 +221,11 @@ test("achievement progress projections exclude soft-deleted watches", () => {
   const activeId = insertWatch(userId, { tmdbId: 201 });
   const deletedId = insertWatch(userId, { tmdbId: 202 });
   db.prepare("UPDATE watches SET release_date='2001-01-01' WHERE id=?").run(activeId);
-  db.prepare("UPDATE watches SET release_date='1991-01-01',deleted_at=datetime('now'),deleted_reason='user_deleted' WHERE id=?").run(deletedId);
+  db.prepare("UPDATE watches SET release_date='1991-01-01' WHERE id=?").run(deletedId);
+  scoreWatchEvent(activeId);
+  scoreWatchEvent(deletedId);
+  db.prepare("UPDATE watches SET deleted_at=datetime('now'),deleted_reason='user_deleted' WHERE id=?").run(deletedId);
+  reconcileMovieEligibility(userId, [202]);
   const projected = progress(userId);
   assert.equal(projected.volume, 1);
   assert.equal(projected.decades, 1);

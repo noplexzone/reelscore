@@ -45,6 +45,7 @@ export async function importHistory(userId, service, items, getMovie, { connecti
     for (const item of normalized) {
       const movie = movieById.get(item.tmdb_id);
       if (!movie) { result.failed++; continue; }
+      if (!result.movies.includes(item.tmdb_id)) result.movies.push(item.tmdb_id);
       const legacy = db.prepare(`SELECT id FROM watches
         WHERE user_id=? AND source=? AND tmdb_id=? AND watched_at=? AND provider_event_id IS NULL
         ORDER BY id`).all(userId, service, item.tmdb_id, item.watched_at);
@@ -74,7 +75,6 @@ export async function importHistory(userId, service, items, getMovie, { connecti
       });
       if (inserted) {
         result.imported++;
-        if (!result.movies.includes(item.tmdb_id)) result.movies.push(item.tmdb_id);
       } else result.skipped++;
     }
     if (result.imported) {

@@ -11,8 +11,9 @@ import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus, notableP
 import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
 import { scoreWatchEvent, reconcileMovieEligibility } from "../services/scoring-service.js";
+import { deleteWatchAndReconcileAchievements } from "../services/achievement-service.js";
 import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
-import { insertWatch, softDeleteWatch } from "../repositories/watch-repository.js";
+import { insertWatch } from "../repositories/watch-repository.js";
 
 export const api = Router();
 
@@ -56,7 +57,7 @@ api.get("/home", async (req, res, next) => {
     const uid = req.user.id;
     const u = db.prepare("SELECT * FROM users WHERE id = ?").get(uid);
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL").all(uid).map((r) => r.tmdb_id)
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND qualifies_for_achievement=1 AND deleted_at IS NULL").all(uid).map((r) => r.tmdb_id)
     );
     const today = new Date().toISOString().slice(0, 10);
 
@@ -64,7 +65,7 @@ api.get("/home", async (req, res, next) => {
     const startedCols = db
       .prepare(
         `SELECT collection_id id, MAX(watched_at) last FROM watches
-         WHERE user_id = ? AND collection_id IS NOT NULL AND deleted_at IS NULL
+         WHERE user_id = ? AND collection_id IS NOT NULL AND qualifies_for_achievement=1 AND deleted_at IS NULL
          GROUP BY collection_id ORDER BY last DESC LIMIT 8`
       )
       .all(uid);
@@ -95,7 +96,7 @@ api.get("/home", async (req, res, next) => {
 
     // Closest locked trophies across the tiered categories.
     const unlockedKeys = new Set(
-      db.prepare("SELECT key FROM achievements WHERE user_id = ?").all(uid).map((r) => r.key)
+      db.prepare("SELECT key FROM achievements WHERE user_id = ? AND revoked_at IS NULL").all(uid).map((r) => r.key)
     );
     const p = progress(uid);
     const candidates = [
@@ -198,7 +199,7 @@ api.get("/collection/:id", async (req, res, next) => {
     const col = await collectionDetails(colId);
     const watchedIds = new Set(
       db
-        .prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
+        .prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND qualifies_for_achievement=1 AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
@@ -226,12 +227,12 @@ api.get("/collection/:id", async (req, res, next) => {
 api.get("/people", async (req, res, next) => {
   try {
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND qualifies_for_achievement=1 AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
     const unlockedKeys = new Set(
-      db.prepare("SELECT key FROM achievements WHERE user_id = ? AND key LIKE 'person:%'")
+      db.prepare("SELECT key FROM achievements WHERE user_id = ? AND key LIKE 'person:%' AND revoked_at IS NULL")
         .all(req.user.id)
         .map((r) => r.key)
     );
@@ -273,7 +274,7 @@ api.get("/people/:id", async (req, res, next) => {
   try {
     const [person, credits] = await Promise.all([personDetails(pid), personMovieCredits(pid)]);
     const watchedIds = new Set(
-      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND deleted_at IS NULL")
+      db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id = ? AND qualifies_for_achievement=1 AND deleted_at IS NULL")
         .all(req.user.id)
         .map((r) => r.tmdb_id)
     );
@@ -338,23 +339,23 @@ api.get("/watches", (req, res) => {
   res.json({ watches: rows });
 });
 
-api.delete("/watches/:id", (req, res) => {
+api.delete("/watches/:id", async (req, res, next) => {
   const watchId = parsePositiveInt(req.params.id);
   if (!watchId) return res.status(400).json({ error: "Invalid watch ID." });
-  const deleted = db.transaction(() => {
-    const watch = softDeleteWatch(req.user.id, watchId);
-    if (watch) reconcileMovieEligibility(req.user.id, [watch.tmdb_id]);
-    return watch;
-  })();
-  if (!deleted) return res.status(404).json({ error: "Watch entry not found." });
-  res.json({ ok: true });
+  try {
+    const deleted = await deleteWatchAndReconcileAchievements(req.user.id, watchId);
+    if (!deleted) return res.status(404).json({ error: "Watch entry not found." });
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ---- Achievements -------------------------------------------------------
 api.get("/achievements", (req, res) => {
   const unlocked = db
     .prepare(
-      "SELECT key, name, description, points, unlocked_at FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC"
+      "SELECT key, name, description, points, unlocked_at FROM achievements WHERE user_id = ? AND revoked_at IS NULL ORDER BY unlocked_at DESC"
     )
     .all(req.user.id);
   res.json({ unlocked, progress: progress(req.user.id) });
@@ -469,7 +470,7 @@ api.get("/users/:username", (req, res) => {
   const trophies = db
     .prepare(
       `SELECT name, description, points, unlocked_at FROM achievements
-       WHERE user_id = ? ORDER BY points DESC LIMIT 12`
+       WHERE user_id = ? AND revoked_at IS NULL ORDER BY points DESC LIMIT 12`
     )
     .all(u.id);
   res.json({ ...userSummary(u), recent, trophies, is_friend: isFriend, connections: linkedServices });

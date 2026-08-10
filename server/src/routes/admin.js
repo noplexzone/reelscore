@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { requireAdmin, requireCsrf, randomHex, sha256, deleteUserSessions } from "../auth.js";
 import { applyPlaceholderReconciliation, previewPlaceholderReconciliation } from "../sync.js";
+import { prepareAchievementReconciliation, applyPreparedAchievementReconciliation } from "../services/achievement-service.js";
 import { IS_HOSTED } from "../config.js";
 import { disableMfa } from "../mfa.js";
 
@@ -255,16 +256,21 @@ admin.post("/users/:id/reconciliation/preview", (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-admin.post("/users/:id/reconciliation/apply", (req, res, next) => {
+admin.post("/users/:id/reconciliation/apply", async (req, res, next) => {
   const targetUserId = parseInt(req.params.id, 10);
   if (!targetUserId || !db.prepare("SELECT id FROM users WHERE id=?").get(targetUserId)) return res.status(404).json({ error: "User not found." });
   try {
-    const result = applyPlaceholderReconciliation(req.user.id, targetUserId, {
-      nonce: req.body?.nonce,
-      previewHash: req.body?.preview_hash,
-      candidateIds: req.body?.candidate_ids,
-      ip: req.ip,
-    });
+    const prepared = await prepareAchievementReconciliation(targetUserId);
+    const result = db.transaction(() => {
+      const applied = applyPlaceholderReconciliation(req.user.id, targetUserId, {
+        nonce: req.body?.nonce,
+        previewHash: req.body?.preview_hash,
+        candidateIds: req.body?.candidate_ids,
+        ip: req.ip,
+      });
+      applyPreparedAchievementReconciliation(targetUserId, prepared);
+      return applied;
+    }).immediate();
     res.set("Cache-Control", "no-store").json(result);
   } catch (error) { next(error); }
 });

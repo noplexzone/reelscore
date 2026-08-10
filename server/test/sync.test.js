@@ -59,6 +59,16 @@ test("provider event identity preserves same-film same-day plays and avoids prov
 });
 
 
+test("idempotent provider retries retain recognized movie IDs for achievement enrichment", async () => {
+  const uid = makeUser("retry_enrichment");
+  const items = [event(777, "2022-03-03T22:00:00Z", "retry-event")];
+  const first = await importHistory(uid, "plex", items, getMovie, { connectionId: "retry-account" });
+  const retry = await importHistory(uid, "plex", items, getMovie, { connectionId: "retry-account" });
+  assert.equal(first.imported, 1);
+  assert.equal(retry.skipped, 1);
+  assert.deepEqual(retry.movies, [777]);
+});
+
 test("parallel and repeated imports are conflict-safe and produce one watch per event", async () => {
   const uid = makeUser("parallel");
   const payload = [event(301, "2020-05-05T18:00:00Z", "stable-history-id")];

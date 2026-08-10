@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { movieDetails } from "../tmdb.js";
-import { evaluate, checkPersonCompletion } from "../achievements.js";
+import { reconcileAchievements } from "../services/achievement-service.js";
 import { notablePeopleInMovie } from "../people.js";
 import { IS_HOSTED } from "../config.js";
 import { ACTIVE_CREDENTIAL_KEY_ID, credentialEnvelopeKeyId, decryptJson, encryptJson } from "../providers.js";
@@ -124,12 +124,29 @@ connections.post("/:service/sync", async (req, res, next) => {
         error.status = 502;
         throw error;
       }
-      const newAchievements = [], seenKeys = new Set(), collectionIds = new Set(), personIds = new Set();
-      const collect = (list) => { for (const achievement of list || []) if (!seenKeys.has(achievement.key)) { seenKeys.add(achievement.key); newAchievements.push(achievement); } };
-      for (const tmdbId of result.movies) { try { const movie = await movieDetails(tmdbId); if (movie.belongs_to_collection?.id) collectionIds.add(movie.belongs_to_collection.id); for (const person of notablePeopleInMovie(movie.credits)) personIds.add(person.id); } catch {} }
-      collect(await evaluate(req.user.id, {}));
-      for (const collectionId of collectionIds) collect(await evaluate(req.user.id, { collection_id: collectionId }));
-      for (const personId of personIds) { try { const achievement = await checkPersonCompletion(req.user.id, personId); if (achievement) collect([achievement]); } catch {} }
+      const collectionIds = new Set(db.prepare(`SELECT DISTINCT collection_id FROM watches
+        WHERE user_id=? AND qualifies_for_achievement=1 AND deleted_at IS NULL AND collection_id IS NOT NULL`)
+        .all(req.user.id).map((row) => row.collection_id));
+      const personIds = new Set();
+      const enrichmentFailures = [];
+      for (const tmdbId of result.movies) {
+        try {
+          const movie = await movieDetails(tmdbId);
+          if (movie.belongs_to_collection?.id) collectionIds.add(movie.belongs_to_collection.id);
+          for (const person of notablePeopleInMovie(movie.credits)) personIds.add(person.id);
+        } catch {
+          enrichmentFailures.push(tmdbId);
+        }
+      }
+      if (enrichmentFailures.length) {
+        const error = new Error(`${service} achievement enrichment was incomplete; retry sync to finish reconciliation.`);
+        error.status = 502;
+        throw error;
+      }
+      const newAchievements = await reconcileAchievements(req.user.id, {
+        collectionIds: [...collectionIds],
+        personIds: [...personIds],
+      });
       db.prepare("UPDATE connections SET last_synced_at=datetime('now') WHERE user_id=? AND service=?").run(req.user.id, service);
       return { imported: result.imported, verified: result.verified, skipped: result.skipped, failed: result.failed, new_achievements: newAchievements };
     });

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Migration 7 establishes the data contract for explainable, reversible scoring. The scoring-service integration now makes `score_events` authoritative for lifetime totals while preserving migrated algebraic totals exactly. Achievement eligibility and revocation still use the compatibility path until the next phase.
+Migration 7 establishes the data contract for explainable, reversible scoring. The scoring-service integration now makes `score_events` authoritative for lifetime totals while preserving migrated algebraic totals exactly. Achievement eligibility, revocation, and reactivation now use qualifying-watch projections and append-only ledger awards.
 
 ## Event and time model
 
@@ -36,6 +36,13 @@ Pending duplicate and deleted events do not move the cooldown clock. Eligibility
 
 Migration 7 creates one `legacy-v1` row for every stored watch and achievement, including zero-point explanatory events. Metadata is built only from stored columns. Unique deterministic `event_key` values make this backfill idempotent, and `achievements.score_event_id` points at its imported award. This ledger import preserves the exact algebraic sum, including negative stored values. Runtime totals now sum lifetime ledger rows, including compensating reversals; `watches.points` remains a compatibility projection rather than the score source.
 
+
+
+## Achievement reconciliation
+
+Achievement progress is derived from unique watches where `qualifies_for_achievement=1 AND deleted_at IS NULL`; cooldown rewatches, pending duplicates, deleted events, and repeated source events cannot inflate volume, genre, decade, series, or filmography requirements. Streak trophies use the maximum historical run of distinct qualifying stored local days, while the current-streak profile projection is handled separately by the timezone service.
+
+Achievement rows are durable state records. Losing the only qualifying basis retains the row, sets `revoked_at` and `revocation_reason`, marks the active award reversed, and appends one compensating ledger event. Re-qualification clears revocation state and appends a new generation award without editing prior history. Active migrated awards remain in place while deserved. Series and filmography requirements are fetched before the short write transaction; a failed external lookup preserves existing state rather than causing a false revocation.
 
 ## Runtime watch reconciliation
 
