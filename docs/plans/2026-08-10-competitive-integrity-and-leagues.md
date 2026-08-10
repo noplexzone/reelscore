@@ -76,7 +76,7 @@
 - `achievements.score_event_id`, `achievements.revoked_at`
 - `duplicate_cases`, `duplicate_ignore_rules`
 
-**Backfill:** normalize legacy timestamps as UTC; calculate canonical chronology without TMDB; insert one `legacy-v1` ledger event for each non-zero stored watch/achievement award; preserve exact totals; remain idempotent.
+**Backfill:** normalize legacy timestamps as UTC; calculate canonical chronology without TMDB; insert one `legacy-v1` ledger event for every stored watch and achievement, including zero-point explanatory entries; preserve exact totals; remain idempotent.
 
 **Proof:** upgrade/idempotency/FK/index/total-preservation tests; IANA validation; midnight/DST conversion; eligibility matrix.
 
