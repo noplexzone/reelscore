@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "NODE_ENV=test DATA_DIR=/tmp/rs-test SESSION_SECRET=test-secret-that-is-at-least-32-chars-long node --test test/scoring.test.js test/ledger.test.js test/achievements-eligibility.test.js test/time.test.js test/streak.test.js test/duplicates.test.js test/eligibility.test.js test/auth.test.js test/validation.test.js test/people.test.js test/sync.test.js test/config.test.js test/migration.test.js test/migration-v7.test.js test/account-foundation.test.js test/public-auth.test.js test/session.test.js test/mfa.test.js test/security.test.js test/admin.test.js test/provider.test.js test/hosted.test.js test/leagues.test.js"
+    "test": "NODE_ENV=test DATA_DIR=/tmp/rs-test SESSION_SECRET=test-secret-that-is-at-least-32-chars-long node --test test/scoring.test.js test/ledger.test.js test/achievements-eligibility.test.js test/time.test.js test/streak.test.js test/duplicates.test.js test/eligibility.test.js test/auth.test.js test/validation.test.js test/people.test.js test/sync.test.js test/config.test.js test/migration.test.js test/migration-v7.test.js test/account-foundation.test.js test/public-auth.test.js test/session.test.js test/mfa.test.js test/security.test.js test/admin.test.js test/provider.test.js test/hosted.test.js test/leagues.test.js test/seasons.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
