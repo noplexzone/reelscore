@@ -65,7 +65,7 @@ case closes with an explicit cancellation reason and scoring is reconciled.
 
 1. Copy `.env.example` to `.env` and fill in:
    - `TMDB_API_KEY` — free from themoviedb.org (v3 key or v4 read token both work)
-   - `JWT_SECRET` — a long random string, e.g. `openssl rand -hex 32`
+   - `SESSION_SECRET` — a long random string, e.g. `openssl rand -hex 32`
 2. `docker compose up -d --build`
 3. Open `http://<host>:3210`, create an account, log a film.
 
@@ -91,7 +91,7 @@ The image runs as UID 99/GID 100. Pre-create the host data directory with matchi
 ```bash
 # Terminal 1 — API on :3000
 cd server && npm ci
-TMDB_API_KEY=yourkey JWT_SECRET=devonlysecret npm run dev
+TMDB_API_KEY=yourkey SESSION_SECRET=devonlysecretthatmustbeatleast32chars npm run dev
 
 # Terminal 2 — web on :5173 (proxies /api to :3000)
 cd web && npm ci && npm run dev
