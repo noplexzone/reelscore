@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Duplicate review workflow for same-user/manual-provider same-film local-day imports, with explicit per-provider cases, pending score quarantine, ownership-scoped API, atomic/idempotent merge and keep resolutions, timezone-safe scoped ignore rules, audited deletion/timezone cancellations, and a direct Review UI.
+- User-selectable IANA timezones in account settings, with browser-zone detection and private `/api/me` exposure.
+- Competitive-integrity migration 7 with timezone-normalized watch chronology, explicit versioned eligibility, an idempotent legacy score-ledger backfill, reversible-achievement references, and duplicate-review schema; plus migration 8 for explicit per-provider duplicate cases and audited system cancellations.
+- Competitive-integrity architecture and phased implementation plan covering qualifying watches, an explainable/reversible score ledger, timezone-aware streaks, duplicate review, seasons, leagues, challenges, and later quality work.
+- Authoritative scoring/eligibility documentation and WAL-consistent, integrity-checked backup/restore instructions with disposable rehearsal guidance.
 - Optional authenticator-app TOTP MFA with one-use recovery codes, MFA-aware sign-in, administrator MFA safeguards, and account settings for enrollment, recovery-code rotation, MFA disable, and active-session revocation.
 - Public hosted verified-account foundation: open email/password registration without pre-verification sessions, one-use HMAC-digested verification/reset tokens with exact epoch-millisecond expiry, encrypted durable email outbox jobs, generic resend/reset responses, legacy-account email claim, password-reset session revocation, and verification/reset/claim web flows.
 - Approved public-hosted v2 design and phased implementation plan: verified email/password accounts, optional TOTP MFA, link-only read-only providers, durable daily sync, multi-source provenance, user-controlled privacy/lifecycle, and sole-admin operations. Universal Plex history remains a feasibility-gated capability; Trakt plus manual entry is the launch fallback.
@@ -25,7 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Daily runtime cap on logging watches (26 runtime-hours per calendar day). New users typically log their entire watch history on first login, which the cap blocked with a 429.
 
 ### Changed
+- Current profile streaks now use distinct qualifying, non-deleted local watch days in each user's timezone. Changing timezone transactionally re-derives historical local days from immutable UTC instants and reconciles static achievement bases without resetting profile visibility.
+- Achievement progress now uses qualifying unique watches. Awards are ledger-backed and reversible: loss of basis retains a revoked trophy record with a compensating score event, while later re-qualification appends a new award generation.
+- Lifetime scoring now reads from the append-oriented score ledger. Manual and imported watches are scored atomically with explicit first-watch, cooldown, and rewatch explanations; corrections use compensating reversals; watch deletion is a reversible soft delete; and provider reconciliation preserves source-event provenance.
 - Acceptance/CI image updated to `noplexzone/reelscore:develop`. Stable semver tags and `latest` are reserved for future promoted releases.
+- Runtime image now executes as UID 99/GID 100; bind-mounted data directories must be writable by that identity.
+- Manual logging now prepares required collection and filmography bases before insertion, so metadata outages cannot commit a watch while silently missing a newly deserved trophy.
 - Custom in-memory rate limiter replaced with `express-rate-limit` ^7 (20 req / 15 min window on `/login` and `/register`).
 - `parsePositiveInt` extracted to `server/src/validation.js`; POST `/watches` and DELETE `/watches/:id` now validate with it (400 on bad input, 404 when no owned entry is removed).
 - `voteAverage` fallback changed from `|| 5` to `?? 5` so an explicit TMDB rating of 0 correctly yields 0 points.

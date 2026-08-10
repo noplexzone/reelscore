@@ -379,6 +379,9 @@ test("admin reconciliation preview/apply is explicit, CSRF-protected, one-use, a
   db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at) VALUES (?,8801,'Admin Fixture',49,'manual','2026-07-27 12:00:00')`).run(userId);
   db.prepare(`INSERT INTO watches (user_id,tmdb_id,title,points,source,watched_at,provider_service,provider_connection_id,provider_event_id)
     VALUES (?,8801,'Admin Fixture',49,'plex','2020-01-01 12:00:00','plex','machine:subject','plex:machine:subject:8801')`).run(userId);
+  const revokedAchievementId = Number(db.prepare(`INSERT INTO achievements
+    (user_id,key,name,description,points,revoked_at,revocation_reason)
+    VALUES (?,'volume:1','Opening Night','Log your first film',25,datetime('now'),'fixture')`).run(userId).lastInsertRowid);
 
   const userLogin = await fetch(`${srv.base}/api/auth/login`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -402,6 +405,15 @@ test("admin reconciliation preview/apply is explicit, CSRF-protected, one-use, a
   assert.equal(preview.candidates.length, 1);
 
   const applyBody = { nonce: preview.nonce, preview_hash: preview.preview_hash, candidate_ids: [preview.candidates[0].candidate_id] };
+  db.exec(`CREATE TRIGGER force_admin_achievement_failure BEFORE UPDATE ON achievements
+    WHEN NEW.id=${revokedAchievementId} BEGIN SELECT RAISE(ABORT,'forced admin achievement failure'); END`);
+  const failedApply = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/apply`, {
+    method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${adminCookie}`, "X-CSRF-Token": adminCsrf }, body: JSON.stringify(applyBody),
+  });
+  assert.equal(failedApply.status, 500);
+  assert.equal(db.prepare("SELECT consumed_at FROM reconciliation_previews WHERE nonce_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1").get().consumed_at, null);
+  assert.equal(db.prepare("SELECT deleted_at FROM watches WHERE provider_event_id='plex:machine:subject:8801'").get().deleted_at, null);
+  db.exec("DROP TRIGGER force_admin_achievement_failure");
   const applyR = await fetch(`${srv.base}/api/admin/users/${userId}/reconciliation/apply`, {
     method: "POST", headers: { "Content-Type": "application/json", Cookie: `session=${adminCookie}`, "X-CSRF-Token": adminCsrf }, body: JSON.stringify(applyBody),
   });

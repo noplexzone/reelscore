@@ -1,0 +1,69 @@
+# Competitive Integrity Foundation
+
+## Status and scope
+
+Migration 7 establishes the data contract for explainable, reversible scoring. The scoring-service integration now makes `score_events` authoritative for lifetime totals while preserving migrated algebraic totals exactly. Achievement eligibility, revocation, and reactivation now use qualifying-watch projections and append-only ledger awards.
+
+## Event and time model
+
+`watches` remains the durable event history. Deletion will be represented by `deleted_at`, not loss of the row. `logical_canonical_watch_id` links every event for the same logical viewing identity to the established canonical watch while preserving each source event.
+
+Canonical watch time consists of:
+
+- `watched_at_utc`: the immutable instant in ISO UTC form;
+- `watched_day_local`: the `YYYY-MM-DD` calendar day derived at ingestion;
+- `timezone_used`: the valid IANA timezone used for that derivation.
+
+Migration 7 interprets legacy timezone-free timestamps as UTC, sets `timezone_used` to `UTC`, derives the local day without consulting TMDB, and applies the same 30-day eligibility policy under the provenance version `competition-v1-backfill`. A user timezone change transactionally re-derives every owned watch's local day from immutable `watched_at_utc`, preserves source identity and timestamps, and reconciles static achievement bases. `server/src/time.js` validates IANA names through `Intl.DateTimeFormat` and derives calendar dates with formatted calendar parts, rather than fixed-hour arithmetic, so midnight and DST changes are handled by the runtime timezone database.
+
+## Versioned eligibility
+
+`competitive-v1` is a pure policy over events ordered by `(watched_at_utc, id)`, scoped by user and TMDB movie id. Its persisted outputs are explicit:
+
+| Event state | Volume | Achievement | Streak | Season |
+| --- | ---: | ---: | ---: | ---: |
+| Canonical first, non-deleted watch | 1 | 1 | 1 | 1 |
+| Rewatch less than 30 days after the prior accepted history event | 0 | 0 | 0 | 0 |
+| Rewatch outside cooldown | 0 | 0 | 1 | 1 |
+| Pending duplicate candidate | 0 | 0 | 0 | 0 |
+| Deleted event | 0 | 0 | 0 | 0 |
+
+Pending duplicate and deleted events do not move the cooldown clock. Eligibility outputs include the policy version and a stable reason. The pure evaluator accepts duplicate state as an input so later duplicate reconciliation can recompute the same fields without embedding policy in routes or SQL.
+
+## Ledger contract
+
+`score_events` is append-oriented. Rows identify a user and optionally a watch, achievement, and future season; record category, signed points, rule version, metadata snapshot, and creation time; and are reversed by setting `reversed_at` and appending one idempotent compensating row linked by `reverses_event_id`. Award points are never edited or deleted during normal scoring reconciliation; totals include both original and compensating rows. `season_id` is intentionally nullable and has no foreign key until the seasons schema is introduced; adding an SQLite reference to a table that does not yet exist makes the current database schema unusable with foreign keys enabled.
+
+Migration 7 creates one `legacy-v1` row for every stored watch and achievement, including zero-point explanatory events. Metadata is built only from stored columns. Unique deterministic `event_key` values make this backfill idempotent, and `achievements.score_event_id` points at its imported award. This ledger import preserves the exact algebraic sum, including negative stored values. Runtime totals now sum lifetime ledger rows, including compensating reversals; `watches.points` remains a compatibility projection rather than the score source.
+
+
+
+## Achievement reconciliation
+
+Achievement progress is derived from unique watches where `qualifies_for_achievement=1 AND deleted_at IS NULL`; cooldown rewatches, pending duplicates, deleted events, and repeated source events cannot inflate volume, genre, decade, series, or filmography requirements. Streak trophies use the maximum historical run of distinct qualifying stored local days, while the current-streak profile projection is handled separately by the timezone service.
+
+Achievement rows are durable state records. Losing the only qualifying basis retains the row, sets `revoked_at` and `revocation_reason`, marks the active award reversed, and appends one compensating ledger event. Re-qualification clears revocation state and appends a new generation award without editing prior history. Active migrated awards remain in place while deserved. Series and filmography requirements are fetched before the short write transaction; a failed external lookup preserves existing state rather than causing a false revocation.
+
+Current streaks are a separate projection over distinct `watched_day_local` values where `qualifies_for_streak=1 AND deleted_at IS NULL`. The run may begin on the user's local today or yesterday and then decrements calendar dates, avoiding fixed elapsed-hour assumptions across DST. Only the private `GET /api/me` response exposes the user's timezone; social and public profile summaries do not.
+
+## Runtime watch reconciliation
+
+Manual logging and provider imports insert the immutable watch record, derive local-day fields, evaluate eligibility, and append the award in one SQLite transaction. First watches, cooldown rewatches, and paid rewatches receive distinct categories, including zero-point explanatory events whose metadata snapshots the stored rating, runtime, timestamp, source, calculation, and reason.
+
+Reconciliation is deterministic per `(user_id, tmdb_id)` timeline. A late import, duplicate-pending transition, or soft deletion sets the prior award's `reversed_at`, appends one idempotent negative compensating event, and issues a replacement only when required. Unchanged `legacy-v1` awards retain their historical stored values even when the current formula would differ. Deleted events remain in history, are excluded from read projections, and no longer affect watch points or the timezone-aware current-streak projection. Placeholder reconciliation retains the provider event as a soft-deleted provenance row linked to the surviving canonical watch.
+
+## Duplicate review contract
+
+`duplicate_cases` stores a durable `duplicate-v1:<tmdb_id>:<watched_day_local>` fingerprint, canonical/candidate watch references, evidence snapshots, pending/resolved state, and one supported resolution: `merge`, `keep_both`, `keep_separate`, or `ignore_future_matching`. A newly inserted provider event creates its own case only when an active manual watch exists for the same owner, TMDB film, and user-local day; closest UTC distance then watch ID chooses the canonical manual deterministically. Explicit per-candidate cases ensure that resolving one provider event cannot release another. Detection and score quarantine run inside the provider import transaction before eligibility reconciliation.
+
+`merge` soft-deletes only the candidate as `duplicate_merged`, links it to the manual canonical row, and preserves provider provenance. `keep_both` accepts both events under normal cooldown/rewatch scoring. `keep_separate` retains both diary rows but permanently excludes the candidate from competitive eligibility. `ignore_future_matching` accepts the current pair normally and adds a `duplicate_ignore_rules` row scoped to the exact user and fingerprint. Resolution, eligibility/ledger repair, and prepared achievement application share one immediate transaction; same-action retries are reads, conflicting retries return a conflict.
+
+Timezone changes transactionally recompute fingerprints and evidence from immutable UTC instants, migrate exact ignore rules, reassign pending cases to the deterministic active manual when possible, and otherwise close them with an auditable cancellation reason before repairing eligibility. Deleting either side of a pending case follows the same rule: reassign when an active manual remains, otherwise close the case and release or retain the candidate according to its actual deletion state. Migration 8 replaces fingerprint-level pending uniqueness with explicit per-candidate indexing and adds cancellation audit fields.
+
+## Migration safety and invariants
+
+- Versions 7 and 8 run through the existing verified `VACUUM INTO` backup gate for any populated database.
+- All schema additions are conditional or `IF NOT EXISTS`, and ledger imports use unique identities plus `INSERT OR IGNORE`.
+- Existing users, watches, achievements, relationships, and stored point columns are preserved; the authoritative runtime total moves from mutable projections to the equivalent ledger sum.
+- Foreign keys protect user/watch/achievement references; indexes support active user totals, source award lookup, pending duplicate queues, and ignore-rule matching.
+- Migration backfill is deterministic and performs no network calls.

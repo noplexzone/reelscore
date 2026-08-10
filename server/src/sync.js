@@ -1,37 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.js";
-import { watchPoints } from "./scoring.js";
+import { reconcileMovieEligibility } from "./services/scoring-service.js";
+import { insertWatch } from "./repositories/watch-repository.js";
+import { localDay, normalizeUtcInstant } from "./time.js";
+import { notablePeopleInMovie } from "./people.js";
+import { detectDuplicateCandidate } from "./services/duplicate-state-service.js";
 import { providerJson, safeProviderFetch, plexHeaders } from "./providers.js";
 import { IS_HOSTED, PLEX_ALLOWED_ORIGINS } from "./config.js";
 
-const normalizeWatchedAt = (value) => new Date(String(value).replace(" ", "T") + (String(value).includes("Z") || /[+-]\d\d:\d\d$/.test(String(value)) ? "" : "Z")).toISOString().replace("T", " ").slice(0, 19);
+const normalizeWatchedAt = (value) => normalizeUtcInstant(value).replace("T", " ").slice(0, 19);
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
 const stableJson = (value) => JSON.stringify(value);
 
-export function recomputeUserWatchScores(userId, tmdbIds = null, { preserveManual = false, preserveIds = [] } = {}) {
-  const affected = tmdbIds == null
-    ? null
-    : [...new Set((Array.isArray(tmdbIds) ? tmdbIds : [tmdbIds]).map(Number))]
-        .filter((id) => Number.isInteger(id) && id > 0);
-  if (affected && affected.length === 0) return;
-  const scope = affected ? ` AND tmdb_id IN (${affected.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`SELECT id,tmdb_id,vote_average,runtime,watched_at,source,provider_event_id
-    FROM watches WHERE user_id=?${scope}
-    ORDER BY watched_at ASC,
-      CASE WHEN provider_event_id IS NULL THEN 'manual:' || printf('%020d',id)
-           ELSE 'provider:' || provider_event_id END ASC`).all(userId, ...(affected || []));
-  const priorByMovie = new Map();
-  const preserved = new Set(preserveIds.map(Number));
-  const update = db.prepare("UPDATE watches SET points=?,is_rewatch=? WHERE id=?");
-  for (const row of rows) {
-    const prior = priorByMovie.get(row.tmdb_id) || [];
-    const score = watchPoints({ voteAverage: row.vote_average, runtime: row.runtime, priorWatches: prior, watchedAt: row.watched_at });
-    if (!(preserveManual && row.source === "manual") && !preserved.has(row.id)) {
-      update.run(score.points, score.isRewatch ? 1 : 0, row.id);
-    }
-    prior.push(row.watched_at);
-    priorByMovie.set(row.tmdb_id, prior);
-  }
+export function recomputeUserWatchScores(userId, tmdbIds = null) {
+  return reconcileMovieEligibility(userId, tmdbIds);
 }
 
 function namespacedEventId(service, connectionId, eventId) {
@@ -62,14 +44,10 @@ export async function importHistory(userId, service, items, getMovie, { connecti
   }
 
   db.transaction(() => {
-    const insert = db.prepare(`INSERT INTO watches
-      (user_id,tmdb_id,title,poster_path,vote_average,runtime,release_date,genres,collection_id,collection_name,
-       points,is_rewatch,source,watched_at,provider_service,provider_connection_id,provider_event_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(user_id,provider_service,provider_connection_id,provider_event_id) WHERE provider_event_id IS NOT NULL DO NOTHING`);
     for (const item of normalized) {
       const movie = movieById.get(item.tmdb_id);
       if (!movie) { result.failed++; continue; }
+      if (!result.movies.includes(item.tmdb_id)) result.movies.push(item.tmdb_id);
       const legacy = db.prepare(`SELECT id FROM watches
         WHERE user_id=? AND source=? AND tmdb_id=? AND watched_at=? AND provider_event_id IS NULL
         ORDER BY id`).all(userId, service, item.tmdb_id, item.watched_at);
@@ -88,18 +66,24 @@ export async function importHistory(userId, service, items, getMovie, { connecti
         result.failed++;
         continue;
       }
-      const info = insert.run(
-        userId, movie.id, movie.title, movie.poster_path, movie.vote_average, movie.runtime, movie.release_date,
-        JSON.stringify((movie.genres || []).map((genre) => genre.name)), movie.belongs_to_collection?.id || null,
-        movie.belongs_to_collection?.name || null, 0, 0, service, item.watched_at, service, connectionId, item.provider_event_id,
-      );
-      if (info.changes) {
+      const inserted = insertWatch({
+        userId,
+        movie,
+        source: service,
+        watchedAt: item.watched_at,
+        providerService: service,
+        providerConnectionId: connectionId,
+        providerEventId: item.provider_event_id,
+      });
+      if (inserted) {
+        detectDuplicateCandidate(userId, inserted.id, {
+          personIds: notablePeopleInMovie(movie.credits).map((person) => person.id),
+        });
         result.imported++;
-        if (!result.movies.includes(item.tmdb_id)) result.movies.push(item.tmdb_id);
       } else result.skipped++;
     }
     if (result.imported) {
-      recomputeUserWatchScores(userId, result.movies, { preserveManual: true, preserveIds: upgradedIds });
+      reconcileMovieEligibility(userId, result.movies);
     }
   })();
   return result;
@@ -274,9 +258,9 @@ export async function plexWatchedMovies(
 
 function currentCandidates(targetUserId, placeholderDate) {
   const manuals = db.prepare(`SELECT id,tmdb_id,title,watched_at FROM watches
-    WHERE user_id=? AND source='manual' AND date(watched_at)=? ORDER BY tmdb_id,id`).all(targetUserId, placeholderDate);
+    WHERE user_id=? AND source='manual' AND deleted_at IS NULL AND date(watched_at)=? ORDER BY tmdb_id,id`).all(targetUserId, placeholderDate);
   const providers = db.prepare(`SELECT id,tmdb_id,title,watched_at,source,provider_service,provider_connection_id,provider_event_id
-    FROM watches WHERE user_id=? AND provider_event_id IS NOT NULL AND date(watched_at)<=?
+    FROM watches WHERE user_id=? AND provider_event_id IS NOT NULL AND deleted_at IS NULL AND date(watched_at)<=?
     ORDER BY tmdb_id,watched_at DESC,provider_event_id DESC,id DESC`).all(targetUserId, placeholderDate);
   const providerByMovie = new Map();
   for (const row of providers) {
@@ -339,23 +323,19 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
       throw error;
     }
 
-    const removeProvider = db.prepare("DELETE FROM watches WHERE id=? AND user_id=? AND provider_event_id=?");
-    const updateManual = db.prepare(`UPDATE watches SET watched_at=?,source=?,provider_service=?,provider_connection_id=?,provider_event_id=?
-      WHERE id=? AND user_id=? AND source='manual' AND watched_at=?`);
+    const timezone = db.prepare("SELECT timezone FROM users WHERE id=?").get(targetUserId)?.timezone || "UTC";
+    const removeProvider = db.prepare(`UPDATE watches SET deleted_at=datetime('now'),deleted_reason='placeholder_reconciled',
+      logical_canonical_watch_id=? WHERE id=? AND user_id=? AND provider_event_id=? AND deleted_at IS NULL`);
+    const updateManual = db.prepare(`UPDATE watches SET watched_at=?,watched_at_utc=?,watched_day_local=?,timezone_used=?,source=?
+      WHERE id=? AND user_id=? AND source='manual' AND watched_at=? AND deleted_at IS NULL`);
     for (const candidate of selected) {
-      if (removeProvider.run(candidate.provider_watch_id, targetUserId, candidate.provider_event_id).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
-      if (updateManual.run(candidate.provider_watched_at, candidate.source, candidate.provider_service, candidate.provider_connection_id, candidate.provider_event_id, candidate.manual_watch_id, targetUserId, candidate.manual_watched_at).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
+      const instant = normalizeUtcInstant(candidate.provider_watched_at);
+      if (removeProvider.run(candidate.manual_watch_id, candidate.provider_watch_id, targetUserId, candidate.provider_event_id).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
+      if (updateManual.run(candidate.provider_watched_at, instant, localDay(instant, timezone), timezone, candidate.source,
+        candidate.manual_watch_id, targetUserId, candidate.manual_watched_at).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
     }
-    const selectedRowIds = new Set(selected.map((candidate) => candidate.manual_watch_id));
     const affectedMovieIds = [...new Set(selected.map((candidate) => candidate.tmdb_id))];
-    const placeholders = affectedMovieIds.map(() => "?").join(",");
-    const preserveIds = db.prepare(`SELECT id FROM watches WHERE user_id=? AND tmdb_id IN (${placeholders})`)
-      .all(targetUserId, ...affectedMovieIds)
-      .map((row) => row.id)
-      .filter((id) => !selectedRowIds.has(id));
-    // Re-score only the rows explicitly selected for conversion. Manual rows and
-    // every unselected provider row remain byte-for-byte unchanged.
-    recomputeUserWatchScores(targetUserId, affectedMovieIds, { preserveManual: true, preserveIds });
+    reconcileMovieEligibility(targetUserId, affectedMovieIds);
     const detail = stableJson({
       actor_user_id: actorUserId,
       target_user_id: targetUserId,
