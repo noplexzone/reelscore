@@ -114,7 +114,7 @@ function reconcileOneMovie(userId, tmdbId) {
         points: desired.points,
         ruleVersion: ELIGIBILITY_RULE_VERSION,
         metadata: desired.metadata,
-        createdAt: watch.watched_at_utc,
+        effectiveAt: watch.watched_at_utc,
       });
     }
     if (!preservingLegacy) {

@@ -1,10 +1,12 @@
 import { db } from "../db.js";
+import { reconcileSeasonBatch, reconcileSeasonFully } from "./season-scoring-service.js";
 import { assertTimeZone, localDay, normalizeUtcInstant } from "../time.js";
 
 const MODES = new Set(["casual", "verified", "challenge"]);
 const CREATE_KEYS = new Set(["name", "start_date", "end_date", "mode", "rule_version"]);
 const UPDATE_KEYS = CREATE_KEYS;
 const OPTION_KEYS = new Set(["asOf"]);
+const RECONCILE_KEYS = new Set(["afterUserId", "limit"]);
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const GRACE_MS = 72 * 60 * 60 * 1000;
 
@@ -43,6 +45,34 @@ function canonicalAsOf(options = {}) {
   if (value.asOf === undefined) return new Date().toISOString();
   try { return normalizeUtcInstant(value.asOf); }
   catch { throw badRequest("asOf must be a valid UTC instant."); }
+}
+
+
+function reconcileOptions(input = {}) {
+  const value = objectInput(input, "Season reconcile options", RECONCILE_KEYS);
+  if (value.afterUserId === null) throw badRequest("afterUserId must be omitted or a positive integer number.");
+  const out = {};
+  if (value.afterUserId !== undefined) out.afterUserId = positiveId(value.afterUserId, "afterUserId");
+  if (value.limit !== undefined) {
+    if (typeof value.limit !== "number" || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 100) throw badRequest("limit must be an integer between 1 and 100.");
+    out.limit = value.limit;
+  }
+  return out;
+}
+function publicReconcileResult(result) {
+  return {
+    seasonId: result.seasonId, processed: result.processed ?? 0, failed: result.failed ?? 0,
+    counts: result.counts ?? { added: result.added ?? 0, reversed: result.reversed ?? 0, reactivated: result.reactivated ?? 0 },
+    nextCursor: result.nextCursor ?? null, done: !!result.done, frozen: !!result.frozen, ready: result.ready !== false,
+  };
+}
+function auditSeasonReconcile(actor, seasonId, options, result, ip = null) {
+  const detail = JSON.stringify({
+    season_id: seasonId, after_user_id: options.afterUserId ?? null, limit: options.limit ?? null,
+    processed: result.processed ?? 0, failed: result.failed ?? 0, next_cursor: result.nextCursor ?? null, done: !!result.done,
+  });
+  db.prepare("INSERT INTO audit_log(user_id,action,target_id,detail,ip) VALUES (?,'season.reconcile',?,?,?)")
+    .run(actor, seasonId, detail, ip);
 }
 
 function localMidnight(date, timeZone) {
@@ -206,6 +236,8 @@ export function finalizeSeason(actorId, seasonId, options = {}) {
     if (row.cancelled_at) throw conflict("Cancelled seasons cannot be finalized.");
     if (new Date(asOf).getTime() < new Date(row.ends_at).getTime() + GRACE_MS) throw conflict("Season finalization requires the full 72-hour grace period.");
     materializeInTransaction(sid, asOf); row = seasonRow(sid);
+    const reconciled = reconcileSeasonFully(sid, { limit: 100 });
+    if (reconciled.failed) throw conflict("Season finalization is unavailable until all score projections reconcile successfully.");
     const pending = db.prepare(`SELECT 1 FROM duplicate_cases d
       JOIN season_members sm ON sm.season_id=? AND sm.user_id=d.user_id
       LEFT JOIN watches canonical ON canonical.id=d.canonical_watch_id
@@ -215,15 +247,6 @@ export function finalizeSeason(actorId, seasonId, options = {}) {
          (candidate.watched_at_utc>=sm.eligible_from AND candidate.watched_at_utc<COALESCE(sm.eligible_until,?))) LIMIT 1`)
       .get(sid, row.ends_at, row.ends_at, row.ends_at);
     if (pending) throw conflict("Pending duplicate review must be resolved before finalization.");
-    const scoringActivity = db.prepare(`SELECT 1 FROM score_events e
-      LEFT JOIN season_members sm ON sm.season_id=? AND sm.user_id=e.user_id
-      WHERE e.season_id=? OR (
-        e.season_id IS NULL AND e.category IN ('watch_first','watch_rewatch','watch_cooldown')
-        AND e.reverses_event_id IS NULL
-        AND NOT EXISTS (SELECT 1 FROM score_events reversal WHERE reversal.reverses_event_id=e.id)
-        AND sm.id IS NOT NULL AND e.effective_at>=sm.eligible_from AND e.effective_at<COALESCE(sm.eligible_until,?)
-      ) LIMIT 1`).get(sid, sid, row.ends_at);
-    if (scoringActivity) throw conflict("Season finalization is unavailable until score projections are reconciled.");
     db.prepare("UPDATE seasons SET finalized_at=?,updated_at=? WHERE id=? AND finalized_at IS NULL").run(asOf, asOf, sid);
     return seasonDto(seasonRow(sid), asOf);
   }).immediate();
@@ -237,4 +260,24 @@ export function listSeasons(userId, leagueId, options = {}) {
 export function getSeason(userId, seasonId, options = {}) {
   const uid = positiveId(userId, "userId"), sid = positiveId(seasonId, "seasonId"), asOf = canonicalAsOf(options);
   const row = seasonRow(sid); if (!row || !activeAccess(uid, row.league_id)) throw notFound(); return seasonDto(row, asOf);
+}
+
+export function reconcileSeasonForManager(actorId, leagueId, seasonId, input = {}, { ip = null } = {}) {
+  const actor = positiveId(actorId, "actorId"), lid = positiveId(leagueId, "leagueId"), sid = positiveId(seasonId, "seasonId");
+  const options = reconcileOptions(input);
+  return db.transaction(() => {
+    const row = seasonRow(sid);
+    if (!row || row.league_id !== lid) throw notFound();
+    requireMutableLeague(requireManager(actor, lid));
+    let result;
+    if (row.cancelled_at || row.finalized_at) {
+      result = { seasonId: sid, processed: 0, failed: 0, counts: { added: 0, reversed: 0, reactivated: 0 }, nextCursor: null, done: true, frozen: true, ready: true };
+    } else if (new Date().toISOString() < row.starts_at) {
+      result = { seasonId: sid, processed: 0, failed: 0, counts: { added: 0, reversed: 0, reactivated: 0 }, nextCursor: null, done: true, frozen: false, ready: false };
+    } else {
+      result = reconcileSeasonBatch(sid, { ...options, enforcePostEndGrace: true });
+    }
+    auditSeasonReconcile(actor, sid, options, result, ip);
+    return publicReconcileResult(result);
+  }).immediate();
 }

@@ -2,8 +2,8 @@ import { db } from "../db.js";
 import { awardScoreEvent, reverseSeasonProjectionChainEvents } from "../repositories/score-ledger.js";
 
 const WATCH_CATEGORIES = new Set(["watch_first", "watch_rewatch", "watch_cooldown"]);
-const USER_OPTION_KEYS = new Set(["tmdbIds", "seasonIds"]);
-const BATCH_OPTION_KEYS = new Set(["afterUserId", "limit"]);
+const USER_OPTION_KEYS = new Set(["tmdbIds", "seasonIds", "enforcePostEndGrace"]);
+const BATCH_OPTION_KEYS = new Set(["afterUserId", "limit", "enforcePostEndGrace"]);
 const MAX_FILTER_IDS = 100;
 const DEFAULT_BATCH_LIMIT = 50;
 
@@ -29,6 +29,8 @@ function idArray(value, name) {
 }
 function placeholders(values) { return values.map(() => "?").join(","); }
 function parseMetadata(value) { try { return JSON.parse(value); } catch { return {}; } }
+function addMillis(instant, ms) { return new Date(new Date(instant).getTime() + ms).toISOString(); }
+const POST_END_GRACE_MS = 72 * 60 * 60 * 1000;
 
 function providerEvidence(watch) {
   const direct = watch.source !== "manual" && watch.provider_service && watch.provider_connection_id && watch.provider_event_id;
@@ -77,7 +79,31 @@ function requestedFrozenSeasonIds(userId, seasonIds) {
     ORDER BY s.id`).all(userId, userId, ...(seasonIds ?? [])).map((row) => row.id);
 }
 function within(value, start, end) { return value >= start && value < end; }
-function desiredFor(userId, tmdbIds, seasonIds) {
+function instantMs(value, name) {
+  const text = String(value);
+  const canonical = text.includes("T") ? text : `${text.replace(" ", "T")}Z`;
+  const ms = Date.parse(canonical);
+  if (!Number.isFinite(ms)) throw new Error(`${name} must be a valid timestamp.`);
+  return ms;
+}
+function hasPreEndResolvedDuplicate(source, season) {
+  return !!db.prepare(`SELECT 1 FROM duplicate_cases d
+    WHERE d.user_id=? AND d.status='resolved' AND d.cancelled_at IS NULL
+      AND d.created_at IS NOT NULL AND d.resolved_at IS NOT NULL
+      AND julianday(d.created_at)<julianday(?) AND julianday(d.resolved_at)<julianday(?)
+      AND (d.canonical_watch_id=? OR d.candidate_watch_id=?) LIMIT 1`)
+    .get(source.user_id, season.ends_at, season.ends_at, source.watch_id, source.watch_id);
+}
+function allowedByPostEndGrace(source, season) {
+  const receivedMs = instantMs(source.created_at, "source created_at");
+  const endMs = instantMs(season.ends_at, "season ends_at");
+  if (receivedMs < endMs) return true;
+  if (!within(source.effective_at, season.starts_at, season.ends_at)) return false;
+  if (source.source === "manual") return hasPreEndResolvedDuplicate(source, season);
+  return source.source === source.provider_service && source.provider_connection_id != null && source.provider_event_id != null
+    && receivedMs < endMs + POST_END_GRACE_MS;
+}
+function desiredFor(userId, tmdbIds, seasonIds, enforcePostEndGrace) {
   const sources = sourceRows(userId, tmdbIds);
   const seasons = candidateSeasons(userId, seasonIds).filter((row) => row.cancelled_at == null && row.finalized_at == null);
   const desired = new Map();
@@ -85,6 +111,7 @@ function desiredFor(userId, tmdbIds, seasonIds) {
     for (const source of sources) {
       if (!WATCH_CATEGORIES.has(source.category) || source.qualifies_for_season !== 1) continue;
       if (!within(source.effective_at, season.starts_at, season.ends_at)) continue;
+      if (enforcePostEndGrace && !allowedByPostEndGrace(source, season)) continue;
       if (!within(source.effective_at, season.eligible_from, season.eligible_until ?? season.ends_at)) continue;
       let evidence = { kind: "season_eligible" };
       if (season.mode === "verified") {
@@ -154,9 +181,10 @@ export function reconcileSeasonScoresForUser(userId, options = {}) {
   const value = exactObject(options, "Season score options", USER_OPTION_KEYS);
   const tmdbIds = idArray(value.tmdbIds, "tmdbIds");
   const seasonIds = idArray(value.seasonIds, "seasonIds");
+  const enforcePostEndGrace = value.enforcePostEndGrace === true;
   return db.transaction(() => {
     const frozenSeasonIds = requestedFrozenSeasonIds(uid, seasonIds);
-    const desired = desiredFor(uid, tmdbIds, seasonIds);
+    const desired = desiredFor(uid, tmdbIds, seasonIds, enforcePostEndGrace);
     const roots = projectionRoots(uid, tmdbIds, seasonIds);
     const existing = new Map(roots.map((root) => [`${root.season_id}:${root.projection_source_event_id}`, root]));
     let added = 0, reversed = 0, reactivated = 0, unchanged = 0;
@@ -198,6 +226,8 @@ export function reconcileSeasonBatch(seasonId, options = {}) {
   const value = exactObject(options, "Season batch options", BATCH_OPTION_KEYS);
   const afterUserId = positiveId(value.afterUserId, "afterUserId", { optional: true }) ?? 0;
   const limit = value.limit === undefined ? DEFAULT_BATCH_LIMIT : value.limit;
+  const enforcePostEndGrace = value.enforcePostEndGrace === true;
+  if (value.enforcePostEndGrace !== undefined && typeof value.enforcePostEndGrace !== "boolean") throw new TypeError("enforcePostEndGrace must be a boolean.");
   if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new RangeError("limit must be an integer between 1 and 100.");
   return db.transaction(() => {
     const season = db.prepare(`SELECT s.cancelled_at,s.finalized_at,s.participants_locked_at,l.archived_at
@@ -215,7 +245,7 @@ export function reconcileSeasonBatch(seasonId, options = {}) {
     const failedUserIds = [];
     for (const row of page) {
       try {
-        const result = reconcileSeasonScoresForUser(row.user_id, { seasonIds: [sid] });
+        const result = reconcileSeasonScoresForUser(row.user_id, { seasonIds: [sid], enforcePostEndGrace });
         for (const key of Object.keys(totals)) totals[key] += result[key];
       } catch {
         failedUserIds.push(row.user_id);
@@ -223,6 +253,24 @@ export function reconcileSeasonBatch(seasonId, options = {}) {
     }
     const done = rows.length <= limit;
     return { seasonId: sid, processed: page.length, failed: failedUserIds.length, failedUserIds, ...totals,
+      counts: { added: totals.added, reversed: totals.reversed, reactivated: totals.reactivated },
       nextCursor: done || page.length === 0 ? null : page.at(-1).user_id, done, frozen: false, ready: true };
   }).immediate();
+}
+
+
+export function reconcileSeasonFully(seasonId, { limit = 100 } = {}) {
+  const totals = { processed: 0, failed: 0, added: 0, reversed: 0, reactivated: 0 };
+  let afterUserId;
+  let last;
+  do {
+    last = reconcileSeasonBatch(seasonId, { ...(afterUserId === undefined ? {} : { afterUserId }), limit, enforcePostEndGrace: true });
+    totals.processed += last.processed ?? 0;
+    totals.failed += last.failed ?? 0;
+    totals.added += last.added ?? 0;
+    totals.reversed += last.reversed ?? 0;
+    totals.reactivated += last.reactivated ?? 0;
+    afterUserId = last.nextCursor ?? undefined;
+  } while (last.ready && !last.frozen && !last.done && afterUserId !== undefined);
+  return { ...last, ...totals, counts: { added: totals.added, reversed: totals.reversed, reactivated: totals.reactivated } };
 }

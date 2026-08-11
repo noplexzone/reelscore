@@ -121,13 +121,14 @@ test("finalization ignores duplicate cases outside participant and creation cuto
   assert.equal(finalizeSeason(ownerId,season.id,{asOf:"2098-02-04T00:00:00.000Z"}).status,"finalized");
 });
 
-test("scored seasons fail closed until projection reconciliation is available",()=>{
+test("finalization reconciles pending season projections instead of failing closed",()=>{
   const {ownerId,league}=fixture(); const season=createSeason(ownerId,league.id,input()); materializeSeasonState(season.id,{asOf:season.starts_at});
   const at="2098-01-10T00:00:00.000Z";
-  db.prepare("INSERT INTO score_events(event_key,user_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run(`projection-gate-${seq}`,ownerId,"watch_first",10,"test-v1","{}",at,at);
-  assert.throws(()=>finalizeSeason(ownerId,season.id,{asOf:"2098-02-04T00:00:00.000Z"}),error(409,/projection/i));
-  assert.equal(db.prepare("SELECT finalized_at FROM seasons WHERE id=?").get(season.id).finalized_at,null);
+  const watchId=Number(db.prepare("INSERT INTO watches(user_id,tmdb_id,title,points,is_rewatch,source,watched_at,watched_at_utc,watched_day_local,timezone_used,qualifies_for_season) VALUES (?,88,'Gate',10,0,'manual','2098-01-10 00:00:00',?,?, 'UTC',1)").run(ownerId,at,at.slice(0,10)).lastInsertRowid);
+  db.prepare("INSERT INTO score_events(event_key,user_id,watch_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES (?,?,?,?,?,?,?, ?,?)")
+    .run(`projection-gate-${seq}`,ownerId,watchId,"watch_first",10,"season-v1","{}",at,at);
+  assert.equal(finalizeSeason(ownerId,season.id,{asOf:"2098-02-04T00:00:00.000Z"}).status,"finalized");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM score_events WHERE season_id=? AND projection_source_event_id IS NOT NULL").get(season.id).c,1);
 });
 
 test("concurrent finalization is replay-safe and records one immutable timestamp",async()=>{

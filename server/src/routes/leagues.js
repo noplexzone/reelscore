@@ -20,6 +20,7 @@ import {
   cancelScheduledSeason,
   materializeSeasonForActor,
   finalizeSeason,
+  reconcileSeasonForManager,
   listSeasons,
   getSeason,
 } from "../services/season-service.js";
@@ -28,6 +29,13 @@ export const leagues = Router();
 export const publicLeagueInvites = Router();
 
 const previewLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please try again later." },
+});
+const reconcileLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
   standardHeaders: true,
@@ -126,6 +134,14 @@ leagues.post("/:leagueId/seasons/:seasonId/finalize", (req, res, next) => {
     requireSeasonInRoute(req.user.id, ids.leagueId, ids.seasonId);
     rejectLifecycleClockInput(req.body);
     return { season: finalizeSeason(req.user.id, ids.seasonId) };
+  });
+});
+
+leagues.post("/:leagueId/seasons/:seasonId/reconcile", reconcileLimiter, (req, res, next) => {
+  const ids = seasonRouteIds(req, res); if (!ids) return;
+  return handle(res, next, 200, () => {
+    requireSeasonInRoute(req.user.id, ids.leagueId, ids.seasonId);
+    return { reconciliation: reconcileSeasonForManager(req.user.id, ids.leagueId, ids.seasonId, req.body, { ip: req.ip }) };
   });
 });
 
