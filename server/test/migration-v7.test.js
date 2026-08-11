@@ -113,7 +113,7 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
 });
 
 
-test("schema-6 automatic snapshot restores and migrates to schema 11", () => {
+test("schema-6 automatic snapshot restores and migrates to schema 12", () => {
   const sourceDir = tempDir("v6-snapshot-source");
   createExactV6(sourceDir, "build-v6-snapshot");
   const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
@@ -135,7 +135,7 @@ test("schema-6 automatic snapshot restores and migrates to schema 11", () => {
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 11);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 12);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
@@ -276,7 +276,7 @@ test("migration 11 upgrades exact schema 10 with an append-only audit log", () =
   assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_reversal_marks_parent'").get());
   database.close();
 
-  const upgrade = runModule(dataDir, "upgrade-v11-audit", "module.initializeDatabase(); module.runMigrations();");
+  const upgrade = runModule(dataDir, "upgrade-v11-audit", "module.initializeDatabase({ targetVersion: 11 }); module.runMigrations({ targetVersion: 11 });");
   assert.equal(upgrade.status, 0, upgrade.stderr);
 
   database = new Database(dbPath);
@@ -312,6 +312,33 @@ test("migration backup detection treats sqlite-prefixed application names litera
   const backup = new Database(path.join(dataDir, "backups", snapshots[0]), { readonly: true, fileMustExist: true });
   assert.deepEqual(backup.prepare("SELECT * FROM sqliteAudit").all(), [{ value: "preserve" }]);
   backup.close();
+});
+
+
+test("migration 12 upgrades exact schema 11 with placeholder provider evidence", () => {
+  const dataDir = tempDir("v11-v12-placeholder");
+  const build = runModule(dataDir, "build-prior-v11-placeholder", `
+    module.initializeDatabase({ targetVersion: 11 });
+    module.db.prepare("INSERT INTO users(id,username,password_hash) VALUES (1,'placeholder-v11','x')").run();
+    module.db.prepare("INSERT INTO leagues(id,name,timezone,owner_user_id,created_by_user_id,created_at,updated_at) VALUES (1,'L','UTC',1,1,'2035-01-01T00:00:00.000Z','2035-01-01T00:00:00.000Z')").run();
+    module.db.prepare("INSERT INTO league_memberships(id,league_id,user_id,role,joined_at,created_at) VALUES (1,1,1,'member','2034-12-31T00:00:00.000Z','2034-12-31T00:00:00.000Z')").run();
+    module.db.prepare("INSERT INTO seasons(id,league_id,name,mode,timezone,rule_version,starts_at,ends_at,created_by_user_id,created_at,updated_at) VALUES (1,1,'S','verified','UTC','season-v1','2035-01-01T00:00:00.000Z','2035-02-01T00:00:00.000Z',1,'2035-01-01T00:00:00.000Z','2035-01-01T00:00:00.000Z')").run();
+    module.db.prepare("INSERT INTO season_members(id,season_id,membership_id,user_id,username_snapshot,eligible_from,created_at) VALUES (1,1,1,1,'placeholder-v11','2035-01-01T00:00:00.000Z','2035-01-01T00:00:00.000Z')").run();
+    module.db.prepare("UPDATE seasons SET participants_locked_at='2035-01-01T00:00:00.000Z' WHERE id=1").run();
+    module.db.prepare("INSERT INTO watches(id,user_id,tmdb_id,title,points,source,watched_at,watched_at_utc,watched_day_local,timezone_used,qualifies_for_season) VALUES (1,1,900,'M',0,'plex','2035-01-10 12:00:00','2035-01-10T12:00:00.000Z','2035-01-10','UTC',1)").run();
+    module.db.prepare("INSERT INTO watches(id,user_id,tmdb_id,title,points,source,watched_at,watched_at_utc,watched_day_local,timezone_used,deleted_at,deleted_reason,logical_canonical_watch_id,provider_service,provider_connection_id,provider_event_id) VALUES (2,1,900,'M',0,'plex','2035-01-10 12:00:00','2035-01-10T12:00:00.000Z','2035-01-10','UTC','2035-01-11T00:00:00.000Z','placeholder_reconciled',1,'plex','c','e')").run();
+    module.db.prepare("INSERT INTO score_events(id,event_key,user_id,watch_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES (1,'life/1',1,1,'watch_first',49,'competition-v1','{}','2035-01-10T12:00:00.000Z','2035-01-10T12:00:00.000Z')").run();
+  `);
+  assert.equal(build.status, 0, build.stderr);
+  const upgrade = runModule(dataDir, "upgrade-v12-placeholder", `
+    module.initializeDatabase();
+    module.db.prepare("INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES ('season/1/watch-event/1',1,1,1,1,1,'watch_first',49,'competition-v1','{}','2035-01-10T12:00:00.000Z','2035-01-10T12:00:00.000Z')").run();
+  `);
+  assert.equal(upgrade.status, 0, upgrade.stderr);
+  const database = new Database(path.join(dataDir, "reelscore.db"), { readonly: true, fileMustExist: true });
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 12);
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM score_events WHERE season_id=1").get().count, 1);
+  database.close();
 });
 
 test("schema 9 enforces league, invite, season, participant, and projection ownership", () => {

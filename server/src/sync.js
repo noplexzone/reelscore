@@ -1,13 +1,20 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "./db.js";
 import { reconcileMovieEligibility } from "./services/scoring-service.js";
+import { reconcileSeasonScoresForUser } from "./services/season-scoring-service.js";
 import { insertWatch } from "./repositories/watch-repository.js";
 import { localDay, normalizeUtcInstant } from "./time.js";
 import { notablePeopleInMovie } from "./people.js";
-import { detectDuplicateCandidate } from "./services/duplicate-state-service.js";
+import { detectDuplicateCandidate, reconcilePendingDuplicatesAfterWatchDeletion } from "./services/duplicate-state-service.js";
 import { providerJson, safeProviderFetch, plexHeaders } from "./providers.js";
 import { IS_HOSTED, PLEX_ALLOWED_ORIGINS } from "./config.js";
 
+const SEASON_RECONCILIATION_CHUNK = 100;
+function chunks(values, size = SEASON_RECONCILIATION_CHUNK) {
+  const out = [];
+  for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size));
+  return out;
+}
 const normalizeWatchedAt = (value) => normalizeUtcInstant(value).replace("T", " ").slice(0, 19);
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
 const stableJson = (value) => JSON.stringify(value);
@@ -22,7 +29,7 @@ function namespacedEventId(service, connectionId, eventId) {
 
 export async function importHistory(userId, service, items, getMovie, { connectionId = `legacy:${service}` } = {}) {
   const result = { imported: 0, verified: 0, skipped: 0, failed: 0, movies: [] };
-  const upgradedIds = [];
+  const scoredMovieIds = new Set();
   const normalized = [];
   for (const item of items || []) {
     if (!item.tmdb_id || !item.watched_at || item.event_id == null) { result.failed++; continue; }
@@ -59,7 +66,6 @@ export async function importHistory(userId, service, items, getMovie, { connecti
           );
         if (upgraded.changes) {
           result.verified++;
-          upgradedIds.push(legacy[0].id);
           continue;
         }
       } else if (legacy.length > 1) {
@@ -80,12 +86,13 @@ export async function importHistory(userId, service, items, getMovie, { connecti
           personIds: notablePeopleInMovie(movie.credits).map((person) => person.id),
         });
         result.imported++;
+        scoredMovieIds.add(item.tmdb_id);
       } else result.skipped++;
     }
-    if (result.imported) {
-      reconcileMovieEligibility(userId, result.movies);
-    }
-  })();
+    if (scoredMovieIds.size) reconcileMovieEligibility(userId, [...scoredMovieIds]);
+    const seasonOnlyMovieIds = result.movies.filter((tmdbId) => !scoredMovieIds.has(tmdbId));
+    for (const chunk of chunks(seasonOnlyMovieIds)) reconcileSeasonScoresForUser(userId, { tmdbIds: chunk });
+  }).immediate();
   return result;
 }
 
@@ -333,6 +340,7 @@ export function applyPlaceholderReconciliation(actorUserId, targetUserId, { nonc
       if (removeProvider.run(candidate.manual_watch_id, candidate.provider_watch_id, targetUserId, candidate.provider_event_id).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
       if (updateManual.run(candidate.provider_watched_at, instant, localDay(instant, timezone), timezone, candidate.source,
         candidate.manual_watch_id, targetUserId, candidate.manual_watched_at).changes !== 1) throw Object.assign(new Error("Reconciliation preview is stale; preview again."), { status: 409 });
+      reconcilePendingDuplicatesAfterWatchDeletion(targetUserId, candidate.provider_watch_id);
     }
     const affectedMovieIds = [...new Set(selected.map((candidate) => candidate.tmdb_id))];
     reconcileMovieEligibility(targetUserId, affectedMovieIds);

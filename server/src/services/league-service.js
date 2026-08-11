@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { db } from "../db.js";
 import { SESSION_SECRET } from "../config.js";
 import { assertTimeZone, normalizeUtcInstant } from "../time.js";
+import { reconcileSeasonScoresForUser } from "./season-scoring-service.js";
 
 const MODES = new Set(["casual", "verified", "challenge"]);
 const STORED_ROLES = new Set(["admin", "member"]);
@@ -251,8 +252,9 @@ export function leaveLeague(userId, leagueId) {
   const uid = positiveId(userId, "userId");
   const lid = positiveId(leagueId, "leagueId");
   return db.transaction(() => {
-    const league = db.prepare("SELECT owner_user_id FROM leagues WHERE id=?").get(lid);
+    const league = db.prepare("SELECT owner_user_id,archived_at FROM leagues WHERE id=?").get(lid);
     if (!league) throw notFound();
+    if (league.archived_at !== null) throw conflict("Archived leagues are read-only.");
     if (league.owner_user_id === uid) throw conflict("Transfer ownership before leaving the league.");
     const active = db.prepare("SELECT id,joined_at FROM league_memberships WHERE league_id=? AND user_id=? AND left_at IS NULL").get(lid, uid);
     if (!active) {
@@ -261,14 +263,20 @@ export function leaveLeague(userId, leagueId) {
       return { league_id: lid, left: false };
     }
     const leftAt = monotonicNow(active.joined_at);
+    const affectedSeasons = db.prepare(`SELECT sm.season_id FROM season_members sm JOIN seasons s ON s.id=sm.season_id
+      JOIN leagues l ON l.id=s.league_id
+      WHERE sm.membership_id=? AND sm.eligible_until IS NULL AND l.archived_at IS NULL
+        AND s.starts_at<=? AND s.ends_at>? AND s.finalized_at IS NULL AND s.cancelled_at IS NULL
+      ORDER BY sm.season_id`).all(active.id, leftAt, leftAt).map((row) => row.season_id);
     db.prepare(`
       UPDATE season_members
       SET eligible_until=?
       WHERE membership_id=? AND eligible_until IS NULL
-        AND EXISTS (SELECT 1 FROM seasons s WHERE s.id=season_members.season_id
-          AND s.starts_at<=? AND s.ends_at>? AND s.finalized_at IS NULL AND s.cancelled_at IS NULL)
+        AND EXISTS (SELECT 1 FROM seasons s JOIN leagues l ON l.id=s.league_id WHERE s.id=season_members.season_id
+          AND l.archived_at IS NULL AND s.starts_at<=? AND s.ends_at>? AND s.finalized_at IS NULL AND s.cancelled_at IS NULL)
     `).run(leftAt, active.id, leftAt, leftAt);
     db.prepare("UPDATE league_memberships SET left_at=? WHERE id=? AND left_at IS NULL").run(leftAt, active.id);
+    if (affectedSeasons.length) reconcileSeasonScoresForUser(uid, { seasonIds: affectedSeasons });
     return { league_id: lid, left: true, left_at: leftAt };
   }).immediate();
 }

@@ -33,6 +33,12 @@ function parseMetadata(value) { try { return JSON.parse(value); } catch { return
 function providerEvidence(watch) {
   const direct = watch.source !== "manual" && watch.provider_service && watch.provider_connection_id && watch.provider_event_id;
   if (direct && watch.source === watch.provider_service) return { kind: "direct_provider", reference: `watch/${watch.watch_id}` };
+  const placeholder = db.prepare(`SELECT p.id provider_watch_id FROM watches p
+    WHERE p.user_id=? AND p.logical_canonical_watch_id=? AND p.deleted_at IS NOT NULL
+      AND p.deleted_reason='placeholder_reconciled' AND p.source<>'manual'
+      AND p.provider_service IS NOT NULL AND p.provider_connection_id IS NOT NULL AND p.provider_event_id IS NOT NULL
+    ORDER BY p.id LIMIT 1`).get(watch.user_id, watch.watch_id);
+  if (placeholder) return { kind: "reconciled_provider", reference: `watch/${placeholder.provider_watch_id}` };
   if (watch.source !== "manual") return null;
   const merged = db.prepare(`SELECT d.id,p.id provider_watch_id FROM duplicate_cases d
     JOIN watches p ON p.id=d.candidate_watch_id

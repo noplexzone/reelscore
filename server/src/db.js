@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 11 } = {}) {
+export function initializeDatabase({ targetVersion = 12 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1386,12 +1386,53 @@ function migration11() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (11)").run();
 }
 
+// Placeholder reconciliation keeps provider proof on the deleted provider watch.
+function migration12() {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_score_events_projection_copy_insert;
+    CREATE TRIGGER trg_score_events_projection_copy_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL AND NEW.projection_source_event_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM score_events src JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.reverses_event_id IS NULL
+          AND src.reversed_at IS NULL AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1 AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR EXISTS (
+              SELECT 1 FROM watches placeholder_provider
+              WHERE placeholder_provider.user_id=w.user_id AND placeholder_provider.logical_canonical_watch_id=w.id
+                AND placeholder_provider.deleted_at IS NOT NULL AND placeholder_provider.deleted_reason='placeholder_reconciled'
+                AND placeholder_provider.source<>'manual' AND placeholder_provider.source=placeholder_provider.provider_service
+                AND placeholder_provider.provider_connection_id IS NOT NULL AND placeholder_provider.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge' AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged' AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy an eligible lifetime source'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (12)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 11 } = {}) {
-  const latestVersion = 11;
+export function runMigrations({ skipBackup = false, targetVersion = 12 } = {}) {
+  const latestVersion = 12;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1466,6 +1507,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 11 } = {}) {
   }
   if (targetVersion >= 11 && !applied.has(11)) {
     db.transaction(migration11)();
+  }
+  if (targetVersion >= 12 && !applied.has(12)) {
+    db.transaction(migration12)();
   }
 
   if (process.env.APP_MODE === "hosted") {
