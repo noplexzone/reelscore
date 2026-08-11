@@ -24,6 +24,7 @@ import {
   listSeasons,
   getSeason,
 } from "../services/season-service.js";
+import { listLeaderboard } from "../services/leaderboard-service.js";
 
 export const leagues = Router();
 export const publicLeagueInvites = Router();
@@ -101,6 +102,16 @@ leagues.post("/:leagueId/seasons", (req, res, next) => {
   if (!leagueId) return;
   return handle(res, next, 201, () => ({ season: createSeason(req.user.id, leagueId, req.body) }));
 });
+leagues.get("/:leagueId/leaderboards/:scope", (req, res, next) => {
+  const leagueId = routeId(res, req.params.leagueId, "league");
+  if (!leagueId) return;
+  return handle(res, next, 200, () => ({ leaderboard: listLeaderboard(req.user.id, leagueId, { ...req.query, scope: req.params.scope }) }));
+});
+leagues.get("/:leagueId/seasons/:seasonId/leaderboard", (req, res, next) => {
+  const ids = seasonRouteIds(req, res); if (!ids) return;
+  return handle(res, next, 200, () => ({ leaderboard: listLeaderboard(req.user.id, ids.leagueId, { ...req.query, scope: "season", seasonId: ids.seasonId }) }));
+});
+
 leagues.get("/:leagueId/seasons/:seasonId", (req, res, next) => {
   const ids = seasonRouteIds(req, res); if (!ids) return;
   return handle(res, next, 200, () => ({ season: requireSeasonInRoute(req.user.id, ids.leagueId, ids.seasonId) }));
