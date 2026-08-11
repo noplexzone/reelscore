@@ -25,6 +25,13 @@ import {
   getSeason,
 } from "../services/season-service.js";
 import { listLeaderboard } from "../services/leaderboard-service.js";
+import {
+  createChallengeDefinition,
+  listChallengeDefinitions,
+  assignChallenge,
+  completeChallenge,
+  getChallengeDashboard,
+} from "../services/challenge-service.js";
 
 export const leagues = Router();
 export const publicLeagueInvites = Router();
@@ -102,10 +109,34 @@ leagues.post("/:leagueId/seasons", (req, res, next) => {
   if (!leagueId) return;
   return handle(res, next, 201, () => ({ season: createSeason(req.user.id, leagueId, req.body) }));
 });
+leagues.get("/:leagueId/challenges", (req, res, next) => {
+  const leagueId = routeId(res, req.params.leagueId, "league");
+  if (!leagueId) return;
+  return handle(res, next, 200, () => ({ challenges: listChallengeDefinitions(req.user.id, leagueId) }));
+});
+leagues.post("/:leagueId/challenges", (req, res, next) => {
+  const leagueId = routeId(res, req.params.leagueId, "league");
+  if (!leagueId) return;
+  return handle(res, next, 201, () => ({ challenge: createChallengeDefinition(req.user.id, leagueId, req.body) }));
+});
 leagues.get("/:leagueId/leaderboards/:scope", (req, res, next) => {
   const leagueId = routeId(res, req.params.leagueId, "league");
   if (!leagueId) return;
   return handle(res, next, 200, () => ({ leaderboard: listLeaderboard(req.user.id, leagueId, { ...req.query, scope: req.params.scope }) }));
+});
+leagues.get("/:leagueId/seasons/:seasonId/challenge-dashboard", (req, res, next) => {
+  const ids = seasonRouteIds(req, res); if (!ids) return;
+  return handle(res, next, 200, () => ({ dashboard: getChallengeDashboard(req.user.id, ids.leagueId, ids.seasonId) }));
+});
+leagues.post("/:leagueId/seasons/:seasonId/challenges/assign", (req, res, next) => {
+  const ids = seasonRouteIds(req, res); if (!ids) return;
+  return handle(res, next, 201, () => ({ assignment: assignChallenge(req.user.id, ids.leagueId, ids.seasonId, req.body) }));
+});
+leagues.post("/:leagueId/seasons/:seasonId/challenge-assignments/:assignmentId/complete", (req, res, next) => {
+  const ids = seasonRouteIds(req, res); if (!ids) return;
+  const assignmentId = routeId(res, req.params.assignmentId, "assignment");
+  if (!assignmentId) return;
+  return handle(res, next, 200, () => ({ assignment: completeChallenge(req.user.id, ids.leagueId, ids.seasonId, assignmentId, req.body) }));
 });
 leagues.get("/:leagueId/seasons/:seasonId/leaderboard", (req, res, next) => {
   const ids = seasonRouteIds(req, res); if (!ids) return;

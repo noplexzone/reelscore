@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 12 } = {}) {
+export function initializeDatabase({ targetVersion = 13 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1427,12 +1427,111 @@ function migration12() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (12)").run();
 }
 
+
+// Challenge definitions and immutable season assignment/completion records.
+function migration13() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS challenge_definitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL CHECK(length(slug) BETWEEN 1 AND 64 AND substr(slug,1,1) GLOB '[a-z0-9]' AND slug NOT GLOB '*[^a-z0-9_-]*'),
+      title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 100),
+      description TEXT CHECK(description IS NULL OR length(description) <= 1000),
+      points INTEGER NOT NULL CHECK(points BETWEEN 1 AND 10000),
+      rule_version TEXT NOT NULL CHECK(length(trim(rule_version)) BETWEEN 1 AND 64),
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      archived_at TEXT CHECK(archived_at IS NULL OR (archived_at GLOB '????-??-??T??:??:??.???Z' AND julianday(archived_at) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(updated_at GLOB '????-??-??T??:??:??.???Z' AND julianday(updated_at) IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_challenge_definitions_league_slug_active
+      ON challenge_definitions(league_id,slug) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_challenge_definitions_league ON challenge_definitions(league_id,archived_at,id);
+
+    CREATE TABLE IF NOT EXISTS challenge_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season_id INTEGER NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+      challenge_definition_id INTEGER NOT NULL REFERENCES challenge_definitions(id) ON DELETE RESTRICT,
+      season_member_id INTEGER NOT NULL REFERENCES season_members(id) ON DELETE RESTRICT,
+      assigned_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      challenge_slug_snapshot TEXT NOT NULL CHECK(length(challenge_slug_snapshot) BETWEEN 1 AND 64 AND substr(challenge_slug_snapshot,1,1) GLOB '[a-z0-9]' AND challenge_slug_snapshot NOT GLOB '*[^a-z0-9_-]*'),
+      challenge_title_snapshot TEXT NOT NULL CHECK(length(trim(challenge_title_snapshot)) BETWEEN 1 AND 100),
+      challenge_description_snapshot TEXT CHECK(challenge_description_snapshot IS NULL OR length(challenge_description_snapshot) <= 1000),
+      challenge_points_snapshot INTEGER NOT NULL CHECK(challenge_points_snapshot BETWEEN 1 AND 10000),
+      challenge_rule_version_snapshot TEXT NOT NULL CHECK(length(trim(challenge_rule_version_snapshot)) BETWEEN 1 AND 64),
+      status TEXT NOT NULL CHECK(status IN ('pending','completed','cancelled')),
+      assigned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(assigned_at GLOB '????-??-??T??:??:??.???Z' AND julianday(assigned_at) IS NOT NULL),
+      completed_at TEXT CHECK(completed_at IS NULL OR (completed_at GLOB '????-??-??T??:??:??.???Z' AND julianday(completed_at) IS NOT NULL)),
+      cancelled_at TEXT CHECK(cancelled_at IS NULL OR (cancelled_at GLOB '????-??-??T??:??:??.???Z' AND julianday(cancelled_at) IS NOT NULL)),
+      score_event_id INTEGER UNIQUE REFERENCES score_events(id) ON DELETE RESTRICT,
+      evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
+      UNIQUE(season_id,challenge_definition_id,season_member_id),
+      CHECK((status='pending' AND completed_at IS NULL AND cancelled_at IS NULL AND score_event_id IS NULL)
+        OR (status='completed' AND completed_at IS NOT NULL AND cancelled_at IS NULL AND score_event_id IS NOT NULL)
+        OR (status='cancelled' AND completed_at IS NULL AND cancelled_at IS NOT NULL AND score_event_id IS NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_challenge_assignments_season_status ON challenge_assignments(season_id,status,id);
+    CREATE INDEX IF NOT EXISTS idx_challenge_assignments_member ON challenge_assignments(season_member_id,status,id);
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_definitions_owner_insert
+    BEFORE INSERT ON challenge_definitions
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id AND (l.owner_user_id=NEW.created_by_user_id
+      OR EXISTS (SELECT 1 FROM league_memberships m WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'challenge definition creator membership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_insert
+    BEFORE INSERT ON challenge_assignments
+    WHEN NOT EXISTS (SELECT 1 FROM seasons s JOIN challenge_definitions d ON d.id=NEW.challenge_definition_id
+      JOIN season_members sm ON sm.id=NEW.season_member_id
+      WHERE s.id=NEW.season_id AND d.league_id=s.league_id AND sm.season_id=s.id
+        AND NEW.challenge_slug_snapshot=d.slug AND NEW.challenge_title_snapshot=d.title
+        AND NEW.challenge_description_snapshot IS d.description AND NEW.challenge_points_snapshot=d.points
+        AND NEW.challenge_rule_version_snapshot=d.rule_version
+        AND s.mode='challenge' AND s.participants_locked_at IS NOT NULL AND s.cancelled_at IS NULL AND s.finalized_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'challenge assignment season or participant mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_completion_update
+    BEFORE UPDATE OF status,completed_at,cancelled_at,score_event_id ON challenge_assignments
+    WHEN NEW.status='completed' AND NOT EXISTS (SELECT 1 FROM score_events e JOIN season_members sm ON sm.id=NEW.season_member_id
+      WHERE e.id=NEW.score_event_id AND e.user_id=sm.user_id AND e.season_id=NEW.season_id AND e.season_member_id=NEW.season_member_id
+        AND e.category='challenge_bonus' AND e.points=NEW.challenge_points_snapshot AND e.rule_version=NEW.challenge_rule_version_snapshot
+        AND e.reverses_event_id IS NULL)
+    BEGIN SELECT RAISE(ABORT,'challenge completion score event mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_identity_immutable
+    BEFORE UPDATE OF season_id,challenge_definition_id,season_member_id,assigned_by_user_id,assigned_at,
+      challenge_slug_snapshot,challenge_title_snapshot,challenge_description_snapshot,challenge_points_snapshot,challenge_rule_version_snapshot
+    ON challenge_assignments
+    WHEN NEW.season_id IS NOT OLD.season_id OR NEW.challenge_definition_id IS NOT OLD.challenge_definition_id
+      OR NEW.season_member_id IS NOT OLD.season_member_id OR NEW.assigned_by_user_id IS NOT OLD.assigned_by_user_id
+      OR NEW.assigned_at IS NOT OLD.assigned_at OR NEW.challenge_slug_snapshot IS NOT OLD.challenge_slug_snapshot
+      OR NEW.challenge_title_snapshot IS NOT OLD.challenge_title_snapshot OR NEW.challenge_description_snapshot IS NOT OLD.challenge_description_snapshot
+      OR NEW.challenge_points_snapshot IS NOT OLD.challenge_points_snapshot OR NEW.challenge_rule_version_snapshot IS NOT OLD.challenge_rule_version_snapshot
+    BEGIN SELECT RAISE(ABORT,'challenge assignment identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_frozen_update
+    BEFORE UPDATE OF status,completed_at,cancelled_at,score_event_id,evidence_json ON challenge_assignments
+    WHEN EXISTS (SELECT 1 FROM seasons s JOIN leagues l ON l.id=s.league_id
+      WHERE s.id=OLD.season_id AND (s.cancelled_at IS NOT NULL OR s.finalized_at IS NOT NULL OR l.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'challenge assignment season is frozen'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_delete
+    BEFORE DELETE ON challenge_assignments
+    BEGIN SELECT RAISE(ABORT,'challenge assignments are immutable'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (13)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 12 } = {}) {
-  const latestVersion = 12;
+export function runMigrations({ skipBackup = false, targetVersion = 13 } = {}) {
+  const latestVersion = 13;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1510,6 +1609,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 12 } = {}) {
   }
   if (targetVersion >= 12 && !applied.has(12)) {
     db.transaction(migration12)();
+  }
+  if (targetVersion >= 13 && !applied.has(13)) {
+    db.transaction(migration13)();
   }
 
   if (process.env.APP_MODE === "hosted") {

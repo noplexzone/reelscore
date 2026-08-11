@@ -113,7 +113,7 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
 });
 
 
-test("schema-6 automatic snapshot restores and migrates to schema 12", () => {
+test("schema-6 automatic snapshot restores and migrates to schema 13", () => {
   const sourceDir = tempDir("v6-snapshot-source");
   createExactV6(sourceDir, "build-v6-snapshot");
   const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
@@ -131,11 +131,11 @@ test("schema-6 automatic snapshot restores and migrates to schema 12", () => {
 
   const restoreDir = tempDir("v6-snapshot-restore");
   fs.copyFileSync(snapshotPath, path.join(restoreDir, "reelscore.db"));
-  const restored = runModule(restoreDir, "restore-v6-to-v9", "module.initializeDatabase();");
+  const restored = runModule(restoreDir, "restore-v6-to-v13", "module.initializeDatabase();");
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 12);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 13);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
@@ -315,7 +315,7 @@ test("migration backup detection treats sqlite-prefixed application names litera
 });
 
 
-test("migration 12 upgrades exact schema 11 with placeholder provider evidence", () => {
+test("migration 12 upgrades exact schema 11 with placeholder provider evidence and continues through schema 13", () => {
   const dataDir = tempDir("v11-v12-placeholder");
   const build = runModule(dataDir, "build-prior-v11-placeholder", `
     module.initializeDatabase({ targetVersion: 11 });
@@ -336,8 +336,37 @@ test("migration 12 upgrades exact schema 11 with placeholder provider evidence",
   `);
   assert.equal(upgrade.status, 0, upgrade.stderr);
   const database = new Database(path.join(dataDir, "reelscore.db"), { readonly: true, fileMustExist: true });
-  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 12);
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 13);
   assert.equal(database.prepare("SELECT COUNT(*) count FROM score_events WHERE season_id=1").get().count, 1);
+  database.close();
+});
+
+
+test("migration 13 initializes challenge definitions and assignment integrity", () => {
+  const dataDir = tempDir("fresh-v13-challenges");
+  const run = runModule(dataDir, "fresh-v13-challenges", "module.initializeDatabase();");
+  assert.equal(run.status, 0, run.stderr);
+  const database = new Database(path.join(dataDir, "reelscore.db"));
+  database.pragma("foreign_keys = ON");
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 13);
+  for (const table of ["challenge_definitions", "challenge_assignments"]) {
+    assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table), table);
+  }
+  database.prepare("INSERT INTO users(id,username,password_hash) VALUES (1,'owner','hash'),(2,'member','hash')").run();
+  database.prepare("INSERT INTO leagues(id,name,timezone,default_mode,owner_user_id,created_by_user_id) VALUES (1,'L','UTC','challenge',1,1)").run();
+  database.prepare("INSERT INTO league_memberships(id,league_id,user_id,role,joined_at) VALUES (1,1,1,'member','2029-01-01T00:00:00.000Z'),(2,1,2,'member','2029-01-01T00:00:00.000Z')").run();
+  database.prepare("INSERT INTO seasons(id,league_id,name,mode,timezone,rule_version,starts_at,ends_at,created_by_user_id) VALUES (1,1,'S','challenge','UTC','season-v1','2030-01-01T00:00:00.000Z','2030-02-01T00:00:00.000Z',1)").run();
+  database.prepare("INSERT INTO season_members(id,season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (1,1,2,2,'member','2030-01-01T00:00:00.000Z')").run();
+  database.prepare("UPDATE seasons SET participants_locked_at='2030-01-01T00:00:00.000Z' WHERE id=1").run();
+  database.prepare("INSERT INTO challenge_definitions(id,league_id,slug,title,points,rule_version,created_by_user_id) VALUES (1,1,'watch-noir','Watch Noir',25,'challenge-v1',1)").run();
+  assert.throws(() => database.prepare("INSERT INTO challenge_definitions(id,league_id,slug,title,points,rule_version,created_by_user_id) VALUES (2,1,'bad space','Bad',25,'challenge-v1',1)").run(), /constraint/i);
+  database.prepare("INSERT INTO challenge_assignments(id,season_id,challenge_definition_id,season_member_id,assigned_by_user_id,challenge_slug_snapshot,challenge_title_snapshot,challenge_points_snapshot,challenge_rule_version_snapshot,status) VALUES (1,1,1,1,1,'watch-noir','Watch Noir',25,'challenge-v1','pending')").run();
+  assert.throws(() => database.prepare("UPDATE challenge_assignments SET challenge_points_snapshot=99 WHERE id=1").run(), /immutable/i);
+  assert.throws(() => database.prepare("DELETE FROM challenge_assignments WHERE id=1").run(), /immutable/i);
+  assert.throws(() => database.prepare("INSERT INTO challenge_assignments(season_id,challenge_definition_id,season_member_id,assigned_by_user_id,challenge_slug_snapshot,challenge_title_snapshot,challenge_points_snapshot,challenge_rule_version_snapshot,status) VALUES (999,1,1,1,'watch-noir','Watch Noir',25,'challenge-v1','pending')").run(), /mismatch|foreign key/i);
+  assert.throws(() => database.prepare("INSERT INTO challenge_assignments(season_id,challenge_definition_id,season_member_id,assigned_by_user_id,challenge_slug_snapshot,challenge_title_snapshot,challenge_points_snapshot,challenge_rule_version_snapshot,status) VALUES (1,1,1,1,'watch-noir','Watch Noir',99,'challenge-v1','pending')").run(), /mismatch/i);
+  database.prepare("UPDATE seasons SET finalized_at='2030-02-05T00:00:00.000Z' WHERE id=1").run();
+  assert.throws(() => database.prepare("UPDATE challenge_assignments SET status='cancelled',cancelled_at='2030-02-06T00:00:00.000Z' WHERE id=1").run(), /frozen/i);
   database.close();
 });
 

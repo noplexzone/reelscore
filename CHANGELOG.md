@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Add private league challenge definition, assignment, completion, bonus, and dashboard API foundations.
+
 - Add private league weekly, monthly, season, and lifetime leaderboard API foundations.
 - Added append-only season score projection reconciliation with database-enforced source copying, reversal shape, archived-league freezing, immutable provider evidence, and atomic reconciliation across competitive watch, duplicate, settings, deletion, import, and membership-departure ingress.
 
