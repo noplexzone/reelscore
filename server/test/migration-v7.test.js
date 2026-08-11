@@ -113,7 +113,7 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
 });
 
 
-test("schema-6 automatic snapshot restores and migrates to schema 9", () => {
+test("schema-6 automatic snapshot restores and migrates to schema 10", () => {
   const sourceDir = tempDir("v6-snapshot-source");
   createExactV6(sourceDir, "build-v6-snapshot");
   const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
@@ -135,7 +135,7 @@ test("schema-6 automatic snapshot restores and migrates to schema 9", () => {
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 9);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 10);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
@@ -233,6 +233,34 @@ test("migration 9 rejects a pre-existing orphan season id and rolls back atomica
   database.close();
 });
 
+
+
+test("migration 10 upgrades an already-recorded schema 9 and restores reversal guards", () => {
+  const dataDir = tempDir("v9-v10");
+  const build = runModule(dataDir, "build-prior-v9", `
+    module.initializeDatabase({ targetVersion: 9 });
+    module.db.prepare("INSERT INTO users(id,username,password_hash) VALUES (1,'prior-v9','x')").run();
+    module.db.prepare("INSERT INTO watches(id,user_id,tmdb_id,title,points,watched_at,watched_at_utc,watched_day_local,timezone_used,qualifies_for_season) VALUES (1,1,42,'Prior watch',7,'2028-01-02 03:04:05','2028-01-02T03:04:05.000Z','2028-01-02','UTC',1)").run();
+    module.db.prepare("INSERT INTO score_events(id,event_key,user_id,watch_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES (1,'prior/watch/1',1,1,'watch_first',7,'competition-v1','{}','2028-01-02T03:04:05.000Z','2028-01-02T03:04:05.000Z')").run();
+    for (const name of ['trg_watches_provider_tuple_insert','trg_watches_provider_tuple_update','trg_watches_provider_tuple_immutable','trg_score_events_reversal_shape_insert','trg_score_events_reversal_marks_parent','trg_score_events_reversed_at_once','trg_score_events_projection_copy_insert','trg_score_events_season_frozen_insert','trg_score_events_season_frozen_update']) module.db.exec('DROP TRIGGER IF EXISTS '+name);
+  `);
+  assert.equal(build.status, 0, build.stderr);
+  let database = new Database(path.join(dataDir, "reelscore.db"), { readonly: true });
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 9);
+  assert.equal(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_reversal_marks_parent'").get(), undefined);
+  database.close();
+  const upgrade = runModule(dataDir, "upgrade-v10", `
+    module.initializeDatabase();
+    module.db.prepare("INSERT INTO score_events(event_key,user_id,watch_id,category,points,rule_version,metadata_json,created_at,effective_at,reverses_event_id) VALUES ('prior/watch/1/reversal',1,1,'watch_first',-7,'competition-v1','{}','2028-02-01T00:00:00.000Z','2028-01-02T03:04:05.000Z',1)").run();
+  `);
+  assert.equal(upgrade.status, 0, upgrade.stderr);
+  database = new Database(path.join(dataDir, "reelscore.db"), { readonly: true });
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 10);
+  assert.equal(database.prepare("SELECT reversed_at FROM score_events WHERE id=1").get().reversed_at, "2028-02-01T00:00:00.000Z");
+  assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_projection_copy_insert'").get());
+  database.close();
+});
+
 test("schema 9 enforces league, invite, season, participant, and projection ownership", () => {
   const dataDir = tempDir("v9-integrity");
   createExactV8(dataDir, "build-v8-integrity");
@@ -283,17 +311,19 @@ test("schema 9 enforces league, invite, season, participant, and projection owne
   database.prepare("INSERT INTO season_members(id,season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (1,1,2,2,'user-two','2028-01-01T00:00:00.000Z')").run();
   assert.throws(() => database.prepare("INSERT INTO season_members(season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (1,3,3,'user-three','2028-01-01T00:00:00.000Z')").run(), /participant ownership/i);
   assert.throws(() => database.prepare("UPDATE season_members SET eligible_until='2028-03-01T00:00:00.000Z' WHERE id=1").run(), /cutoff|check constraint/i);
-  database.prepare(`INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,created_at)
-    VALUES ('season/1/watch/1',2,1,1,1,1,'watch_first',17,'season-v1','2028-01-02T03:04:05.000Z')`).run();
-  assert.throws(() => database.prepare(`INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version)
-    VALUES ('season/1/watch/1/reissue',2,1,1,1,1,'watch_first',17,'season-v1')`).run(), /unique/i);
+  database.prepare("UPDATE watches SET qualifies_for_season=1 WHERE id=1").run();
+  database.prepare("UPDATE seasons SET participants_locked_at='2028-01-01T00:00:00.000Z' WHERE id=1").run();
+  database.prepare(`INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,created_at,effective_at)
+    VALUES ('season/1/watch-event/1',2,1,1,1,1,'watch_first',17,'competition-v1','2028-01-02T03:04:05.000Z','2028-01-02T03:04:05.000Z')`).run();
+  assert.throws(() => database.prepare(`INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,effective_at)
+    VALUES ('season/1/watch-event/1',2,1,1,1,1,'watch_first',17,'competition-v1','2028-01-02T03:04:05.000Z')`).run(), /unique/i);
   const reissuedSourceId = Number(database.prepare(`INSERT INTO score_events
     (event_key,user_id,watch_id,category,points,rule_version,effective_at)
     VALUES ('v8/watch/1/reissued',2,1,'watch_rewatch',4,'competition-v1','2028-01-02T03:04:05.000Z')`).run().lastInsertRowid);
   database.prepare(`INSERT INTO score_events
     (event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,effective_at)
     VALUES (?,?,?,?,?,?,?,?,?,'2028-01-02T03:04:05.000Z')`)
-    .run(`season/1/watch-event/${reissuedSourceId}`,2,1,1,reissuedSourceId,1,'watch_rewatch',4,'season-v1');
+    .run(`season/1/watch-event/${reissuedSourceId}`,2,1,1,reissuedSourceId,1,'watch_rewatch',4,'competition-v1');
   assert.equal(database.prepare("SELECT COUNT(*) count FROM score_events WHERE season_id=1 AND reverses_event_id IS NULL").get().count, 2);
   assert.throws(() => database.prepare(`INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version)
     VALUES ('season/cross-user',1,1,1,1,1,'watch_first',17,'season-v1')`).run(), /source|participant|owner mismatch/i);
@@ -302,12 +332,11 @@ test("schema 9 enforces league, invite, season, participant, and projection owne
   assert.throws(() => database.prepare(`INSERT INTO score_events(event_key,user_id,category,points,rule_version,season_id)
     VALUES ('season/orphan',2,'challenge_bonus',5,'season-v1',999)`).run(), /season/i);
   assert.throws(() => database.prepare("UPDATE league_memberships SET joined_at='2029-01-01T00:00:00.000Z' WHERE id=2").run(), /membership episode.*immutable/i);
-  database.prepare("UPDATE seasons SET participants_locked_at='2028-01-01T00:00:00.000Z' WHERE id=1").run();
   assert.throws(() => database.prepare("UPDATE season_members SET username_snapshot='rewritten' WHERE id=1").run(), /participant snapshot.*immutable/i);
   assert.throws(() => database.prepare("DELETE FROM season_members WHERE id=1").run(), /participant set.*locked/i);
   assert.throws(() => database.prepare("INSERT INTO season_members(season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (1,1,1,'late','2028-01-01T00:00:00.000Z')").run(), /participant set.*locked/i);
   assert.throws(() => database.prepare("UPDATE score_events SET watch_id=NULL WHERE id=1").run(), /source|participant mismatch/i);
-  assert.throws(() => database.prepare("UPDATE score_events SET category='challenge_bonus',projection_source_event_id=NULL WHERE event_key='season/1/watch/1'").run(), /ledger identity.*immutable/i);
+  assert.throws(() => database.prepare("UPDATE score_events SET category='challenge_bonus',projection_source_event_id=NULL WHERE event_key='season/1/watch-event/1'").run(), /ledger identity.*immutable/i);
   assert.throws(() => database.prepare(`INSERT INTO score_events
     (event_key,user_id,watch_id,season_id,season_member_id,category,points,rule_version,effective_at)
     VALUES ('season/1/watch/no-source',2,1,1,1,'watch_first',1,'season-v1','2028-01-03T00:00:00.000Z')`).run(), /projection source/i);
@@ -328,7 +357,7 @@ test("schema 9 enforces league, invite, season, participant, and projection owne
   assert.throws(() => database.prepare(`INSERT INTO score_events
     (event_key,user_id,season_id,season_member_id,category,points,rule_version,effective_at)
     VALUES ('season/1/post-final',2,1,1,'challenge_bonus',1,'season-v1','2028-01-20T00:00:00.000Z')`).run(), /season standings.*immutable/i);
-  assert.throws(() => database.prepare("UPDATE score_events SET reversed_at='2028-02-05T00:00:00.000Z' WHERE event_key='season/1/watch/1'").run(), /season standings.*immutable/i);
+  assert.throws(() => database.prepare("UPDATE score_events SET reversed_at='2028-02-05T00:00:00.000Z' WHERE event_key='season/1/watch-event/1'").run(), /season standings.*immutable/i);
   assert.throws(() => database.prepare("UPDATE season_members SET eligible_until='2028-01-20T00:00:00.000Z' WHERE id=1").run(), /finalized.*season participants.*immutable/i);
   database.prepare(`INSERT INTO seasons(id,league_id,name,mode,timezone,rule_version,starts_at,ends_at,created_by_user_id)
     VALUES (2,2,'Cancelled','verified','UTC','season-v1','2032-01-01T00:00:00.000Z','2032-02-01T00:00:00.000Z',3)`).run();

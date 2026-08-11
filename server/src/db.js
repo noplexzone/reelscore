@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 9 } = {}) {
+export function initializeDatabase({ targetVersion = 10 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1098,6 +1098,31 @@ function migration9() {
         AND (m.left_at IS NULL OR m.left_at>=s.ends_at OR NEW.eligible_until IS NOT NULL AND NEW.eligible_until<=m.left_at))
     BEGIN SELECT RAISE(ABORT,'season participant ownership or cutoff mismatch'); END;
 
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_insert
+    BEFORE INSERT ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)=''
+        OR NEW.provider_connection_id IS NULL OR trim(NEW.provider_connection_id)=''
+        OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_update
+    BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)=''
+        OR NEW.provider_connection_id IS NULL OR trim(NEW.provider_connection_id)=''
+        OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_immutable
+    BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN OLD.provider_event_id IS NOT NULL AND
+      (NEW.source IS NOT OLD.source OR NEW.provider_service IS NOT OLD.provider_service
+        OR NEW.provider_connection_id IS NOT OLD.provider_connection_id OR NEW.provider_event_id IS NOT OLD.provider_event_id)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is immutable'); END;
+
     CREATE TRIGGER IF NOT EXISTS trg_score_events_ledger_identity_immutable
     BEFORE UPDATE OF event_key,user_id,watch_id,achievement_id,season_id,category,points,rule_version,metadata_json,created_at,reverses_event_id,projection_source_event_id,season_member_id ON score_events
     WHEN NEW.event_key IS NOT OLD.event_key OR NEW.user_id IS NOT OLD.user_id OR NEW.watch_id IS NOT OLD.watch_id
@@ -1109,16 +1134,84 @@ function migration9() {
       OR NEW.season_member_id IS NOT OLD.season_member_id
     BEGIN SELECT RAISE(ABORT,'score event source/owner mismatch; ledger identity is immutable'); END;
 
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversal_shape_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM score_events parent WHERE parent.id=NEW.reverses_event_id
+        AND NEW.user_id=parent.user_id AND NEW.watch_id IS parent.watch_id
+        AND NEW.achievement_id IS parent.achievement_id AND NEW.season_id IS parent.season_id
+        AND NEW.projection_source_event_id IS parent.projection_source_event_id
+        AND NEW.season_member_id IS parent.season_member_id AND NEW.category=parent.category
+        AND NEW.points=-parent.points AND NEW.rule_version=parent.rule_version
+        AND NEW.effective_at=parent.effective_at
+        AND (parent.reverses_event_id IS NULL OR
+          (parent.season_id IS NOT NULL AND parent.projection_source_event_id IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'score reversal does not exactly compensate its parent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversal_marks_parent
+    AFTER INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL
+    BEGIN UPDATE score_events SET reversed_at=NEW.created_at WHERE id=NEW.reverses_event_id AND reversed_at IS NULL; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversed_at_once
+    BEFORE UPDATE OF reversed_at ON score_events
+    WHEN OLD.reversed_at IS NOT NULL OR NEW.reversed_at IS NULL
+      OR NOT EXISTS (SELECT 1 FROM score_events child
+        WHERE child.reverses_event_id=OLD.id AND child.created_at=NEW.reversed_at)
+    BEGIN SELECT RAISE(ABORT,'score reversal marker is derived and immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_projection_copy_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL
+      AND NEW.projection_source_event_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM score_events src
+        JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id
+        JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id
+          AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL
+          AND src.reverses_event_id IS NULL AND src.reversed_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id
+          AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1
+          AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from
+          AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service
+              AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case
+              JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge'
+                AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged'
+                AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy its lifetime source'); END;
+
     CREATE TRIGGER IF NOT EXISTS trg_score_events_season_frozen_insert
     BEFORE INSERT ON score_events
     WHEN NEW.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons s
-      WHERE s.id=NEW.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL))
+      WHERE s.id=NEW.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL)))
     BEGIN SELECT RAISE(ABORT,'finalized or cancelled season standings are immutable'); END;
 
     CREATE TRIGGER IF NOT EXISTS trg_score_events_season_frozen_update
     BEFORE UPDATE ON score_events
     WHEN OLD.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons s
-      WHERE s.id=OLD.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL))
+      WHERE s.id=OLD.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL)))
     BEGIN SELECT RAISE(ABORT,'finalized or cancelled season standings are immutable'); END;
 
     CREATE TRIGGER IF NOT EXISTS trg_score_events_delete
@@ -1189,12 +1282,97 @@ function migration9() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (9)").run();
 }
 
+function migration10() {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_insert;
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_update;
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_immutable;
+    DROP TRIGGER IF EXISTS trg_score_events_reversal_shape_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_reversal_marks_parent;
+    DROP TRIGGER IF EXISTS trg_score_events_reversed_at_once;
+    DROP TRIGGER IF EXISTS trg_score_events_projection_copy_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_season_frozen_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_season_frozen_update;
+
+    CREATE TRIGGER trg_watches_provider_tuple_insert BEFORE INSERT ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)='' OR NEW.provider_connection_id IS NULL
+        OR trim(NEW.provider_connection_id)='' OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+    CREATE TRIGGER trg_watches_provider_tuple_update BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)='' OR NEW.provider_connection_id IS NULL
+        OR trim(NEW.provider_connection_id)='' OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+    CREATE TRIGGER trg_watches_provider_tuple_immutable BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN OLD.provider_event_id IS NOT NULL AND (NEW.source IS NOT OLD.source OR NEW.provider_service IS NOT OLD.provider_service
+      OR NEW.provider_connection_id IS NOT OLD.provider_connection_id OR NEW.provider_event_id IS NOT OLD.provider_event_id)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is immutable'); END;
+
+    CREATE TRIGGER trg_score_events_reversal_shape_insert BEFORE INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM score_events parent WHERE parent.id=NEW.reverses_event_id
+        AND NEW.user_id=parent.user_id AND NEW.watch_id IS parent.watch_id AND NEW.achievement_id IS parent.achievement_id
+        AND NEW.season_id IS parent.season_id AND NEW.projection_source_event_id IS parent.projection_source_event_id
+        AND NEW.season_member_id IS parent.season_member_id AND NEW.category=parent.category
+        AND NEW.points=-parent.points AND NEW.rule_version=parent.rule_version AND NEW.effective_at=parent.effective_at
+        AND (parent.reverses_event_id IS NULL OR (parent.season_id IS NOT NULL AND parent.projection_source_event_id IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'score reversal does not exactly compensate its parent'); END;
+    CREATE TRIGGER trg_score_events_reversal_marks_parent AFTER INSERT ON score_events WHEN NEW.reverses_event_id IS NOT NULL
+    BEGIN UPDATE score_events SET reversed_at=NEW.created_at WHERE id=NEW.reverses_event_id AND reversed_at IS NULL; END;
+    CREATE TRIGGER trg_score_events_reversed_at_once BEFORE UPDATE OF reversed_at ON score_events
+    WHEN OLD.reversed_at IS NOT NULL OR NEW.reversed_at IS NULL OR NOT EXISTS (
+      SELECT 1 FROM score_events child WHERE child.reverses_event_id=OLD.id AND child.created_at=NEW.reversed_at)
+    BEGIN SELECT RAISE(ABORT,'score reversal marker is derived and immutable'); END;
+
+    CREATE TRIGGER trg_score_events_projection_copy_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL AND NEW.projection_source_event_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM score_events src JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.reverses_event_id IS NULL
+          AND src.reversed_at IS NULL AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1 AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge' AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged' AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy an eligible lifetime source'); END;
+
+    CREATE TRIGGER trg_score_events_season_frozen_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons season JOIN leagues league ON league.id=season.league_id
+      WHERE season.id=NEW.season_id AND (season.finalized_at IS NOT NULL OR season.cancelled_at IS NOT NULL OR league.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'finalized, cancelled, or archived season standings are immutable'); END;
+    CREATE TRIGGER trg_score_events_season_frozen_update BEFORE UPDATE ON score_events
+    WHEN OLD.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons season JOIN leagues league ON league.id=season.league_id
+      WHERE season.id=OLD.season_id AND (season.finalized_at IS NOT NULL OR season.cancelled_at IS NOT NULL OR league.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'finalized, cancelled, or archived season standings are immutable'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (10)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 9 } = {}) {
-  const latestVersion = 9;
+export function runMigrations({ skipBackup = false, targetVersion = 10 } = {}) {
+  const latestVersion = 10;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1260,6 +1438,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 9 } = {}) {
   }
   if (targetVersion >= 9 && !applied.has(9)) {
     db.transaction(migration9)();
+  }
+  if (targetVersion >= 10 && !applied.has(10)) {
+    db.transaction(migration10)();
   }
 
   if (process.env.APP_MODE === "hosted") {

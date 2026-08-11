@@ -107,6 +107,7 @@ test("lifetime totals remain separate from future season rows and expose a categ
   const watchId = insertWatch(userId, { watchedAt: "2030-01-02T00:00:00.000Z" });
   const source = awardScoreEvent({ eventKey: `test/lifetime/${userId}`, userId, watchId, category: "watch_first", points: 49,
     ruleVersion: "test-v1", metadata: {}, effectiveAt: "2030-01-02T00:00:00.000Z" });
+  db.prepare("UPDATE watches SET qualifies_for_season=1 WHERE id=?").run(watchId);
   const leagueId = Number(db.prepare("INSERT INTO leagues(name,timezone,owner_user_id,created_by_user_id) VALUES ('Future League','UTC',?,?)")
     .run(userId, userId).lastInsertRowid);
   const membershipId = Number(db.prepare("INSERT INTO league_memberships(league_id,user_id,role,joined_at) VALUES (?,?,'member','2029-01-01T00:00:00.000Z')")
@@ -117,12 +118,13 @@ test("lifetime totals remain separate from future season rows and expose a categ
     .run(leagueId, userId).lastInsertRowid);
   const seasonMemberId = Number(db.prepare("INSERT INTO season_members(season_id,membership_id,user_id,username_snapshot,eligible_from) VALUES (?,?,?,'season-user','2030-01-01T00:00:00.000Z')")
     .run(seasonId, membershipId, userId).lastInsertRowid);
+  db.prepare("UPDATE seasons SET participants_locked_at='2030-01-01T00:00:00.000Z' WHERE id=?").run(seasonId);
   db.prepare(`INSERT INTO score_events
     (event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,effective_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`).run(`season/${seasonId}/watch-event/${source.id}`, userId, watchId, seasonId, source.id,
-      seasonMemberId, "watch_first", 12, "test-v1", source.effective_at);
+      seasonMemberId, "watch_first", source.points, source.rule_version, source.effective_at);
   assert.equal(totalScore(userId), 49);
-  assert.equal(totalScore(userId, { seasonId }), 12);
+  assert.equal(totalScore(userId, { seasonId }), 49);
   assert.deepEqual(scoreBreakdown(userId), [{ category: "watch_first", points: 49 }]);
   const projection = db.prepare("SELECT * FROM score_events WHERE season_id=? AND reverses_event_id IS NULL").get(seasonId);
   const [projectionReversal] = reverseScoreEvents({ userId, eventIds: [projection.id], reason: "season correction", reversedAt: "2030-03-01T00:00:00Z" });

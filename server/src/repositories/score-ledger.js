@@ -3,7 +3,7 @@ import { normalizeUtcInstant } from "../time.js";
 
 function positiveId(value, name, { optional = false } = {}) {
   if (value == null && optional) return null;
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${name} must be a positive integer number.`);
   }
   return value;
@@ -30,7 +30,7 @@ function metadataJson(metadata) {
 function normalizedInput(input) {
   if (!input || typeof input !== "object") throw new TypeError("A score event input object is required.");
   const points = input.points;
-  if (typeof points !== "number" || !Number.isInteger(points)) throw new TypeError("points must be an integer number.");
+  if (typeof points !== "number" || !Number.isSafeInteger(points)) throw new TypeError("points must be an integer number.");
   return {
     event_key: requiredString(input.eventKey, "eventKey"),
     user_id: positiveId(input.userId, "userId"),
@@ -72,7 +72,7 @@ export function awardScoreEvent(input) {
   return row;
 }
 
-export function reverseScoreEvents({ userId, eventIds, reason, reversedAt = new Date() }) {
+function reverseScoreEventsInternal({ userId, eventIds, reason, reversedAt = new Date(), context = null }, { seasonChain = false } = {}) {
   const normalizedUserId = positiveId(userId, "userId");
   if (!Array.isArray(eventIds)) throw new TypeError("eventIds must be an array");
   const ids = eventIds.map((id) => positiveId(id, "eventId"));
@@ -81,17 +81,9 @@ export function reverseScoreEvents({ userId, eventIds, reason, reversedAt = new 
   const normalizedReason = reason == null ? "reconciled" : requiredString(reason, "reason");
   const reverse = db.transaction(() => ids.map((id) => {
     const original = db.prepare(`SELECT * FROM score_events
-      WHERE id=? AND user_id=? AND reverses_event_id IS NULL`).get(id, normalizedUserId);
+      WHERE id=? AND user_id=? ${seasonChain ? "AND season_id IS NOT NULL AND projection_source_event_id IS NOT NULL" : "AND reverses_event_id IS NULL"}`).get(id, normalizedUserId);
     if (!original) throw new Error(`Score event ${id} was not found for this user.`);
-    const existing = db.prepare("SELECT * FROM score_events WHERE reverses_event_id=?").get(id);
-    if (existing) {
-      if (original.reversed_at == null) throw new Error(`Score event ${id} has an incomplete reversal.`);
-      return existing;
-    }
-    const changed = db.prepare("UPDATE score_events SET reversed_at=? WHERE id=? AND reversed_at IS NULL")
-      .run(instant, id);
-    if (changed.changes !== 1) throw new Error(`Score event ${id} reversal is incomplete.`);
-    return awardScoreEvent({
+    const childInput = {
       eventKey: `reverse/${original.event_key}`,
       userId: original.user_id,
       watchId: original.watch_id,
@@ -107,13 +99,34 @@ export function reverseScoreEvents({ userId, eventIds, reason, reversedAt = new 
         reverses_event_key: original.event_key,
         original_category: original.category,
         original_points: original.points,
+        ...(context == null ? {} : { projection_context: context }),
       },
       createdAt: instant,
       effectiveAt: original.effective_at,
       reversesEventId: original.id,
-    });
+    };
+    const existing = db.prepare("SELECT * FROM score_events WHERE reverses_event_id=?").get(id);
+    if (existing) {
+      const expected = { ...normalizedInput(childInput), created_at: existing.created_at };
+      if (!sameImmutableEvent(existing, expected) || original.reversed_at !== existing.created_at) {
+        throw new Error(`Score event ${id} has a conflicting reversal child.`);
+      }
+      return existing;
+    }
+    const child = awardScoreEvent(childInput);
+    const updated = db.prepare("SELECT reversed_at FROM score_events WHERE id=?").get(id);
+    if (updated?.reversed_at !== child.created_at) throw new Error(`Score event ${id} reversal is incomplete.`);
+    return child;
   }));
   return reverse();
+}
+
+export function reverseScoreEvents(input) {
+  return reverseScoreEventsInternal(input);
+}
+
+export function reverseSeasonProjectionChainEvents(input) {
+  return reverseScoreEventsInternal(input, { seasonChain: true });
 }
 
 export function totalScore(userId, { seasonId = null } = {}) {
