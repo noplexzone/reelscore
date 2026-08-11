@@ -113,7 +113,7 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
 });
 
 
-test("schema-6 automatic snapshot restores and migrates to schema 10", () => {
+test("schema-6 automatic snapshot restores and migrates to schema 11", () => {
   const sourceDir = tempDir("v6-snapshot-source");
   createExactV6(sourceDir, "build-v6-snapshot");
   const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
@@ -135,7 +135,7 @@ test("schema-6 automatic snapshot restores and migrates to schema 10", () => {
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 10);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 11);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
@@ -250,7 +250,7 @@ test("migration 10 upgrades an already-recorded schema 9 and restores reversal g
   assert.equal(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_reversal_marks_parent'").get(), undefined);
   database.close();
   const upgrade = runModule(dataDir, "upgrade-v10", `
-    module.initializeDatabase();
+    module.initializeDatabase({ targetVersion: 10 });
     module.db.prepare("INSERT INTO score_events(event_key,user_id,watch_id,category,points,rule_version,metadata_json,created_at,effective_at,reverses_event_id) VALUES ('prior/watch/1/reversal',1,1,'watch_first',-7,'competition-v1','{}','2028-02-01T00:00:00.000Z','2028-01-02T03:04:05.000Z',1)").run();
   `);
   assert.equal(upgrade.status, 0, upgrade.stderr);
@@ -259,6 +259,59 @@ test("migration 10 upgrades an already-recorded schema 9 and restores reversal g
   assert.equal(database.prepare("SELECT reversed_at FROM score_events WHERE id=1").get().reversed_at, "2028-02-01T00:00:00.000Z");
   assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_projection_copy_insert'").get());
   database.close();
+});
+
+test("migration 11 upgrades exact schema 10 with an append-only audit log", () => {
+  const dataDir = tempDir("v10-v11-audit");
+  const build = runModule(dataDir, "build-prior-v10-audit", `
+    module.initializeDatabase({ targetVersion: 10 });
+    module.db.prepare("INSERT INTO audit_log(id,user_id,action,target_id,detail,ip,created_at) VALUES (1,NULL,'prior.action',42,'preserve me','127.0.0.1','2028-01-02 03:04:05')").run();
+  `);
+  assert.equal(build.status, 0, build.stderr);
+
+  const dbPath = path.join(dataDir, "reelscore.db");
+  let database = new Database(dbPath, { readonly: true });
+  const before = database.prepare("SELECT * FROM audit_log ORDER BY id").all();
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 10);
+  assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_reversal_marks_parent'").get());
+  database.close();
+
+  const upgrade = runModule(dataDir, "upgrade-v11-audit", "module.initializeDatabase(); module.runMigrations();");
+  assert.equal(upgrade.status, 0, upgrade.stderr);
+
+  database = new Database(dbPath);
+  assert.equal(database.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 11);
+  assert.deepEqual(database.prepare("SELECT * FROM audit_log ORDER BY id").all(), before);
+  assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_score_events_reversal_marks_parent'").get());
+  assert.throws(() => database.prepare("UPDATE audit_log SET detail='rewritten' WHERE id=1").run(), /audit log.*append-only/i);
+  assert.throws(() => database.prepare("DELETE FROM audit_log WHERE id=1").run(), /audit log.*append-only/i);
+  assert.throws(() => database.prepare("INSERT OR REPLACE INTO audit_log(id,user_id,action,target_id,detail) VALUES (1,NULL,'replacement',99,'rewritten')").run(), /audit log.*append-only/i);
+  database.prepare("INSERT INTO audit_log(user_id,action,target_id,detail) VALUES (NULL,'new.action',43,'insert still works')").run();
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM audit_log").get().count, 2);
+  database.close();
+
+  const snapshots = fs.readdirSync(path.join(dataDir, "backups")).filter((name) => name.endsWith(".db"));
+  assert.equal(snapshots.length, 1);
+  const backup = new Database(path.join(dataDir, "backups", snapshots[0]), { readonly: true, fileMustExist: true });
+  assert.equal(backup.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 10);
+  assert.deepEqual(backup.prepare("SELECT * FROM audit_log ORDER BY id").all(), before);
+  backup.close();
+});
+
+test("migration backup detection treats sqlite-prefixed application names literally", () => {
+  const dataDir = tempDir("v10-v11-sqlite-name");
+  const build = runModule(dataDir, "build-prior-v10-sqlite-name", `
+    module.initializeDatabase({ targetVersion: 10 });
+    module.db.exec("CREATE TABLE sqliteAudit(value TEXT NOT NULL); INSERT INTO sqliteAudit(value) VALUES ('preserve');");
+  `);
+  assert.equal(build.status, 0, build.stderr);
+  const upgrade = runModule(dataDir, "upgrade-v11-sqlite-name", "module.initializeDatabase();");
+  assert.equal(upgrade.status, 0, upgrade.stderr);
+  const snapshots = fs.readdirSync(path.join(dataDir, "backups")).filter((name) => name.endsWith(".db"));
+  assert.equal(snapshots.length, 1);
+  const backup = new Database(path.join(dataDir, "backups", snapshots[0]), { readonly: true, fileMustExist: true });
+  assert.deepEqual(backup.prepare("SELECT * FROM sqliteAudit").all(), [{ value: "preserve" }]);
+  backup.close();
 });
 
 test("schema 9 enforces league, invite, season, participant, and projection ownership", () => {

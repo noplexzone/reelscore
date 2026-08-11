@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added append-only season score projection reconciliation with database-enforced source copying, reversal shape, archived-league freezing, and immutable provider evidence.
 
 ### Added
+- Append-only audit storage enforced by schema 11 database triggers.
 - Competitive season schema 9 with private league ownership, immutable membership episodes, immutable-capacity expiring invite audit, lockable participant snapshots, irreversible cancellation/finalization, frozen archived standings, non-overlapping seasons, source-linked append-only season score events, strict calendar-valid timestamps, canonical legacy-time migration, and immutable effective scoring chronology.
 - Private league services and HTTP APIs for ownership, membership episodes, safe invite preview/acceptance, role management, transfer, and archival.
 - Immutable season lifecycle services and private HTTP APIs with DST-safe league-local scheduling, non-overlapping half-open boundaries, owner/admin controls, replay-safe participant snapshots and cancellation, derived lifecycle states, departure cutoffs, and duplicate-aware finalization after a 72-hour grace period; scored seasons fail closed until the projection slice can reconcile them before freezing.

@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 10 } = {}) {
+export function initializeDatabase({ targetVersion = 11 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1367,12 +1367,31 @@ function migration10() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (10)").run();
 }
 
+// Audit records are immutable after insertion so security history cannot be rewritten.
+function migration11() {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_insert
+    BEFORE INSERT ON audit_log
+    WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM audit_log WHERE id=NEW.id)
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_update
+    BEFORE UPDATE ON audit_log
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_delete
+    BEFORE DELETE ON audit_log
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (11)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 10 } = {}) {
-  const latestVersion = 10;
+export function runMigrations({ skipBackup = false, targetVersion = 11 } = {}) {
+  const latestVersion = 11;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1389,10 +1408,13 @@ export function runMigrations({ skipBackup = false, targetVersion = 10 } = {}) {
   // including upgrades between versioned schemas.
   let backup = null;
   if (hasPendingMigration && !skipBackup) {
-    const userCount = tableExists("users")
-      ? db.prepare("SELECT COUNT(*) c FROM users").get().c
-      : 0;
-    if (userCount > 0) {
+    const applicationTables = db.prepare(`SELECT name FROM sqlite_master
+      WHERE type='table' AND substr(name,1,7)<>'sqlite_' AND name<>'schema_versions'`).all();
+    const hasApplicationRows = applicationTables.some(({ name }) => {
+      const quoted = `"${name.replaceAll('"', '""')}"`;
+      return Boolean(db.prepare(`SELECT 1 FROM ${quoted} LIMIT 1`).get());
+    });
+    if (hasApplicationRows) {
       backup = createBackup();
       if (!backup.ok) {
         throw new Error("[reelscore] Refusing to migrate: pre-migration backup failed integrity check.");
@@ -1441,6 +1463,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 10 } = {}) {
   }
   if (targetVersion >= 10 && !applied.has(10)) {
     db.transaction(migration10)();
+  }
+  if (targetVersion >= 11 && !applied.has(11)) {
+    db.transaction(migration11)();
   }
 
   if (process.env.APP_MODE === "hosted") {

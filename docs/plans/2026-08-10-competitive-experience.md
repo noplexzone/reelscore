@@ -190,7 +190,7 @@ DOCKER_HOST=tcp://172.18.0.1:2375 docker run --rm -v "$PWD":/app -v /app/web/nod
 **Objective:** Persist auditable user-specific challenge assignments and deterministically evaluate six versioned rule families in Challenge-mode seasons only.
 
 **Files:**
-- Modify: `server/src/db.js` with additive schema 10
+- Modify: `server/src/db.js` with additive schema 12
 - Create: `server/src/services/challenge-service.js`
 - Create: `server/test/challenges.test.js`
 - Modify: `server/src/routes/leagues.js`
