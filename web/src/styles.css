@@ -358,3 +358,54 @@ input:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color:
   .duplicate-summary > img, .duplicate-summary > .poster-fallback { width: 72px; flex-basis: 72px; }
   .duplicate-actions .btn { width: 100%; }
 }
+
+
+/* ---- Competitive leagues ---- */
+select {
+  font-family: inherit;
+  font-size: 15px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--cream);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+select:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color: transparent; }
+.leagues-page > h1, .league-hero h1 { font-family: var(--font-display); letter-spacing: .8px; margin: 0 0 4px; }
+.league-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; overflow: hidden; }
+.league-hero h1 { font-size: clamp(30px, 7vw, 54px); line-height: 1.05; max-width: 720px; }
+.eyebrow { margin: 0 0 6px; color: var(--gold); font-size: 11px; letter-spacing: 2.4px; font-weight: 700; text-transform: uppercase; }
+.league-count { font-family: var(--font-display); font-size: clamp(48px, 12vw, 96px); line-height: 1; color: var(--gold); opacity: .9; }
+.league-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 18px 0 10px; }
+.league-form { display: grid; gap: 10px; align-content: start; }
+.league-form h2, .league-form h3 { margin: 0; }
+.league-form.compact { margin-top: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.league-form.compact h3 { grid-column: 1 / -1; }
+.league-form.compact .btn { justify-self: start; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.section-heading .section-title { margin-bottom: 8px; }
+.segmented { display: flex; flex-wrap: wrap; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; }
+.segmented button { background: transparent; color: var(--dim); border: 0; border-radius: 7px; padding: 7px 10px; font-weight: 700; cursor: pointer; text-transform: capitalize; }
+.segmented button.active, .segmented button:hover { background: var(--panel-2); color: var(--cream); }
+.period-input { max-width: 220px; margin-bottom: 10px; }
+.leaderboard-list .rank { width: 42px; color: var(--gold); font-family: var(--font-mono); font-weight: 700; }
+.member-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 18px; }
+.member-strip .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 700; }
+.member-strip .chip small { color: var(--dim); font-weight: 400; margin-left: 6px; }
+.invite-card code { display: block; width: fit-content; max-width: 100%; overflow-wrap: anywhere; margin-top: 8px; padding: 7px 9px; border-radius: 6px; background: var(--ink); color: var(--gold); font-family: var(--font-mono); }
+.season-card { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.season-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.challenge-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.challenge-summary .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 8px; text-align: center; }
+.challenge-summary .num { font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: var(--gold); }
+.challenge-summary .num.flame { color: var(--velvet); }
+.challenge-summary .lbl { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); }
+.challenge-list { margin-top: 12px; }
+.challenge-card { display: grid; gap: 10px; }
+.challenge-complete { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+@media (max-width: 720px) {
+  .league-grid, .league-form.compact { grid-template-columns: 1fr; }
+  .league-hero { align-items: flex-start; }
+  .league-count { font-size: 48px; }
+  .challenge-complete { grid-template-columns: 1fr; }
+}

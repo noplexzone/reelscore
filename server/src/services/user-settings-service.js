@@ -59,10 +59,11 @@ export function applyPreparedUserSettingsUpdate(userId, prepared, options = {}) 
     }
     if (hasOwn(update, "timezone")) {
       db.prepare("UPDATE users SET timezone=? WHERE id=?").run(update.timezone, uid);
-      const rows = db.prepare("SELECT id,watched_at_utc FROM watches WHERE user_id=? ORDER BY id").all(uid);
+      const rows = db.prepare("SELECT id,tmdb_id,watched_at_utc FROM watches WHERE user_id=? ORDER BY id").all(uid);
       const updateWatch = db.prepare("UPDATE watches SET watched_day_local=?,timezone_used=? WHERE id=? AND user_id=?");
       for (const row of rows) updateWatch.run(localDay(row.watched_at_utc, update.timezone), update.timezone, row.id, uid);
-      const affectedMovies = rebaseDuplicateStateForTimezone(uid);
+      rebaseDuplicateStateForTimezone(uid);
+      const affectedMovies = [...new Set(rows.map((row) => row.tmdb_id))];
       if (affectedMovies.length) reconcileMovieEligibility(uid, affectedMovies);
       applyPreparedAchievementReconciliation(uid, preparedAchievements);
     }

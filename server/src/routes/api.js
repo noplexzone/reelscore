@@ -17,6 +17,7 @@ import { logManualWatchAndReconcile } from "../services/manual-watch-service.js"
 import { currentStreak } from "../services/streak-service.js";
 import { updateUserSettings } from "../services/user-settings-service.js";
 import { duplicates } from "./duplicates.js";
+import { leagues } from "./leagues.js";
 
 export const api = Router();
 
@@ -30,6 +31,7 @@ api.use((req, res, next) => {
 
 api.use("/connections", connections);
 api.use("/duplicates", duplicates);
+api.use("/leagues", leagues);
 
 function userSummary(u, { includeTimezone = false } = {}) {
   const summary = {

@@ -7,6 +7,7 @@ import { authRouter, requireAuth } from "./auth.js";
 import { providerAuthRouter } from "./provider-auth.js";
 import { api } from "./routes/api.js";
 import { admin } from "./routes/admin.js";
+import { publicLeagueInvites } from "./routes/leagues.js";
 import { DATA_DIR, db, initializeDatabase } from "./db.js";
 import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED } from "./config.js";
 import {
@@ -55,6 +56,8 @@ export function createApp() {
   // Auth routes: login, register, logout, /auth/me.
   app.use("/api/auth/provider", providerAuthRouter);
   app.use("/api/auth", authRouter);
+  // Invite preview is public but accepts the bearer secret only in a no-store POST body.
+  app.use("/api/league-invites", publicLeagueInvites);
 
   // All other /api routes require an active session.
   app.use("/api", requireAuth);

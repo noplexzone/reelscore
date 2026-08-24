@@ -3,8 +3,15 @@ import { evaluateWatchEligibility, ELIGIBILITY_RULE_VERSION } from "../eligibili
 import { basePoints } from "../scoring.js";
 import { localDay, normalizeUtcInstant } from "../time.js";
 import { awardScoreEvent, reverseScoreEvents } from "../repositories/score-ledger.js";
+import { reconcileSeasonScoresForUser } from "./season-scoring-service.js";
 
 const WATCH_CATEGORIES = ["watch_first", "watch_cooldown", "watch_rewatch"];
+const SEASON_RECONCILIATION_CHUNK = 100;
+function chunks(values, size = SEASON_RECONCILIATION_CHUNK) {
+  const out = [];
+  for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size));
+  return out;
+}
 
 function desiredAward(watch, decision) {
   if (watch.deleted_at != null || ["duplicate_pending", "duplicate_keep_separate"].includes(decision.eligibility_reason)) return null;
@@ -107,7 +114,7 @@ function reconcileOneMovie(userId, tmdbId) {
         points: desired.points,
         ruleVersion: ELIGIBILITY_RULE_VERSION,
         metadata: desired.metadata,
-        createdAt: watch.watched_at_utc,
+        effectiveAt: watch.watched_at_utc,
       });
     }
     if (!preservingLegacy) {
@@ -122,7 +129,11 @@ export function reconcileMovieEligibility(userId, tmdbIds = null) {
   const ids = tmdbIds == null
     ? db.prepare("SELECT DISTINCT tmdb_id FROM watches WHERE user_id=?").all(userId).map((row) => row.tmdb_id)
     : [...new Set((Array.isArray(tmdbIds) ? tmdbIds : [tmdbIds]).map(Number))].filter((id) => Number.isInteger(id) && id > 0);
-  return db.transaction(() => ids.flatMap((tmdbId) => reconcileOneMovie(userId, tmdbId)))();
+  return db.transaction(() => {
+    const results = ids.flatMap((tmdbId) => reconcileOneMovie(userId, tmdbId));
+    for (const chunk of chunks(ids)) reconcileSeasonScoresForUser(userId, { tmdbIds: chunk });
+    return results;
+  }).immediate();
 }
 
 export function scoreWatchEvent(watchId) {

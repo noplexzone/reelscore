@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 8 } = {}) {
+export function initializeDatabase({ targetVersion = 13 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -691,12 +691,847 @@ function migration8() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (8)").run();
 }
 
+
+// Private leagues, immutable membership tenures, and season score ownership.
+function migration9() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS leagues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 100),
+      timezone TEXT NOT NULL CHECK(length(trim(timezone)) BETWEEN 1 AND 64),
+      default_mode TEXT NOT NULL DEFAULT 'casual' CHECK(default_mode IN ('casual','verified','challenge')),
+      owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      archived_at TEXT CHECK(archived_at IS NULL OR (archived_at GLOB '????-??-??T??:??:??.???Z' AND julianday(archived_at) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(updated_at GLOB '????-??-??T??:??:??.???Z' AND julianday(updated_at) IS NOT NULL)
+    );
+
+    CREATE TABLE IF NOT EXISTS league_memberships (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('admin','member')),
+      joined_at TEXT NOT NULL CHECK(joined_at GLOB '????-??-??T??:??:??.???Z' AND julianday(joined_at) IS NOT NULL),
+      left_at TEXT CHECK(left_at IS NULL OR (left_at GLOB '????-??-??T??:??:??.???Z' AND julianday(left_at) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      UNIQUE(league_id,user_id,joined_at),
+      CHECK(left_at IS NULL OR left_at > joined_at)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_league_memberships_active
+      ON league_memberships(league_id,user_id) WHERE left_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_league_memberships_user_active
+      ON league_memberships(user_id,league_id) WHERE left_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_league_memberships_tenure
+      ON league_memberships(league_id,user_id,joined_at,left_at,id);
+
+    CREATE TABLE IF NOT EXISTS league_invites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash) BETWEEN 16 AND 256),
+      max_uses INTEGER NOT NULL DEFAULT 1 CHECK(max_uses BETWEEN 1 AND 1000),
+      expires_at TEXT NOT NULL CHECK(expires_at GLOB '????-??-??T??:??:??.???Z' AND julianday(expires_at) IS NOT NULL),
+      revoked_at TEXT CHECK(revoked_at IS NULL OR (revoked_at GLOB '????-??-??T??:??:??.???Z' AND julianday(revoked_at) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_league_invites_league_active
+      ON league_invites(league_id,expires_at,id) WHERE revoked_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_league_invites_token ON league_invites(token_hash);
+
+    CREATE TABLE IF NOT EXISTS league_invite_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invite_id INTEGER NOT NULL REFERENCES league_invites(id) ON DELETE RESTRICT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      membership_id INTEGER NOT NULL REFERENCES league_memberships(id) ON DELETE RESTRICT,
+      used_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(used_at GLOB '????-??-??T??:??:??.???Z' AND julianday(used_at) IS NOT NULL),
+      UNIQUE(invite_id,user_id),
+      UNIQUE(invite_id,membership_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_league_invite_uses_invite ON league_invite_uses(invite_id,used_at,id);
+    CREATE INDEX IF NOT EXISTS idx_league_invite_uses_user ON league_invite_uses(user_id,used_at,id);
+
+    CREATE TABLE IF NOT EXISTS seasons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+      name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 100),
+      mode TEXT NOT NULL CHECK(mode IN ('casual','verified','challenge')),
+      timezone TEXT NOT NULL CHECK(length(trim(timezone)) BETWEEN 1 AND 64),
+      rule_version TEXT NOT NULL CHECK(length(trim(rule_version)) BETWEEN 1 AND 64),
+      starts_at TEXT NOT NULL CHECK(starts_at GLOB '????-??-??T??:??:??.???Z' AND julianday(starts_at) IS NOT NULL),
+      ends_at TEXT NOT NULL CHECK(ends_at GLOB '????-??-??T??:??:??.???Z' AND julianday(ends_at) IS NOT NULL),
+      cancelled_at TEXT CHECK(cancelled_at IS NULL OR (cancelled_at GLOB '????-??-??T??:??:??.???Z' AND julianday(cancelled_at) IS NOT NULL)),
+      finalized_at TEXT CHECK(finalized_at IS NULL OR (finalized_at GLOB '????-??-??T??:??:??.???Z' AND julianday(finalized_at) IS NOT NULL)),
+      participants_locked_at TEXT CHECK(participants_locked_at IS NULL OR (participants_locked_at GLOB '????-??-??T??:??:??.???Z' AND julianday(participants_locked_at) IS NOT NULL)),
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(updated_at GLOB '????-??-??T??:??:??.???Z' AND julianday(updated_at) IS NOT NULL),
+      CHECK(starts_at < ends_at),
+      CHECK(cancelled_at IS NULL OR finalized_at IS NULL),
+      CHECK(finalized_at IS NULL OR finalized_at >= ends_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_seasons_league_chronology
+      ON seasons(league_id,starts_at,ends_at,id) WHERE cancelled_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_seasons_lifecycle ON seasons(ends_at,finalized_at,cancelled_at,id);
+
+    CREATE TABLE IF NOT EXISTS season_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season_id INTEGER NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+      membership_id INTEGER NOT NULL REFERENCES league_memberships(id) ON DELETE RESTRICT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      username_snapshot TEXT NOT NULL CHECK(length(trim(username_snapshot)) BETWEEN 1 AND 64),
+      eligible_from TEXT NOT NULL CHECK(eligible_from GLOB '????-??-??T??:??:??.???Z' AND julianday(eligible_from) IS NOT NULL),
+      eligible_until TEXT CHECK(eligible_until IS NULL OR (eligible_until GLOB '????-??-??T??:??:??.???Z' AND julianday(eligible_until) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      UNIQUE(season_id,user_id),
+      UNIQUE(season_id,membership_id),
+      CHECK(eligible_until IS NULL OR eligible_until > eligible_from)
+    );
+    CREATE INDEX IF NOT EXISTS idx_season_members_user ON season_members(user_id,season_id,id);
+    CREATE INDEX IF NOT EXISTS idx_season_members_membership ON season_members(membership_id,season_id,id);
+  `);
+
+  if (!columnExists("score_events", "effective_at")) {
+    db.exec("ALTER TABLE score_events ADD COLUMN effective_at TEXT");
+  }
+  const updateEffectiveAt = db.prepare("UPDATE score_events SET effective_at=? WHERE id=?");
+  for (const row of db.prepare("SELECT id,created_at FROM score_events WHERE effective_at IS NULL ORDER BY id").all()) {
+    let normalized;
+    try {
+      normalized = normalizeUtcInstant(row.created_at);
+    } catch (error) {
+      throw new Error(`[reelscore] Migration 9 invalid effective time for score event ${row.id}: ${error.message}`);
+    }
+    updateEffectiveAt.run(normalized, row.id);
+  }
+  if (db.prepare("SELECT COUNT(*) count FROM score_events WHERE effective_at IS NULL").get().count !== 0) {
+    throw new Error("[reelscore] Migration 9 effective-time backfill incomplete.");
+  }
+  if (!columnExists("score_events", "projection_source_event_id")) {
+    db.exec("ALTER TABLE score_events ADD COLUMN projection_source_event_id INTEGER REFERENCES score_events(id) ON DELETE RESTRICT");
+  }
+  if (!columnExists("score_events", "season_member_id")) {
+    db.exec("ALTER TABLE score_events ADD COLUMN season_member_id INTEGER REFERENCES season_members(id) ON DELETE RESTRICT");
+  }
+
+  const orphanSeasons = db.prepare("SELECT COUNT(*) c FROM score_events WHERE season_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM seasons WHERE id=score_events.season_id)").get().c;
+  if (orphanSeasons !== 0) {
+    throw new Error(`[reelscore] Migration 9 refused ${orphanSeasons} orphan non-null season id(s).`);
+  }
+
+  const strictCanonicalUtc = (expr) => `(
+    typeof(${expr})='text' AND length(${expr})=24 AND
+    ${expr} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+    CAST(substr(${expr},6,2) AS INTEGER) BETWEEN 1 AND 12 AND
+    CAST(substr(${expr},9,2) AS INTEGER) BETWEEN 1 AND CASE CAST(substr(${expr},6,2) AS INTEGER)
+      WHEN 2 THEN CASE WHEN (CAST(substr(${expr},1,4) AS INTEGER)%400=0 OR
+        (CAST(substr(${expr},1,4) AS INTEGER)%4=0 AND CAST(substr(${expr},1,4) AS INTEGER)%100<>0)) THEN 29 ELSE 28 END
+      WHEN 4 THEN 30 WHEN 6 THEN 30 WHEN 9 THEN 30 WHEN 11 THEN 30 ELSE 31 END AND
+    CAST(substr(${expr},12,2) AS INTEGER) BETWEEN 0 AND 23 AND
+    CAST(substr(${expr},15,2) AS INTEGER) BETWEEN 0 AND 59 AND
+    CAST(substr(${expr},18,2) AS INTEGER) BETWEEN 0 AND 59)`;
+  const strictLegacyUtc = (expr) => `(
+    typeof(${expr})='text' AND length(${expr})=19 AND
+    ${expr} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]' AND
+    CAST(substr(${expr},6,2) AS INTEGER) BETWEEN 1 AND 12 AND
+    CAST(substr(${expr},9,2) AS INTEGER) BETWEEN 1 AND CASE CAST(substr(${expr},6,2) AS INTEGER)
+      WHEN 2 THEN CASE WHEN (CAST(substr(${expr},1,4) AS INTEGER)%400=0 OR
+        (CAST(substr(${expr},1,4) AS INTEGER)%4=0 AND CAST(substr(${expr},1,4) AS INTEGER)%100<>0)) THEN 29 ELSE 28 END
+      WHEN 4 THEN 30 WHEN 6 THEN 30 WHEN 9 THEN 30 WHEN 11 THEN 30 ELSE 31 END AND
+    CAST(substr(${expr},12,2) AS INTEGER) BETWEEN 0 AND 23 AND
+    CAST(substr(${expr},15,2) AS INTEGER) BETWEEN 0 AND 59 AND
+    CAST(substr(${expr},18,2) AS INTEGER) BETWEEN 0 AND 59)`;
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_score_events_season_chronology
+      ON score_events(season_id,user_id,effective_at,id) WHERE season_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_score_events_original_season_projection
+      ON score_events(season_id,projection_source_event_id)
+      WHERE projection_source_event_id IS NOT NULL AND reverses_event_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_score_events_projection_source
+      ON score_events(projection_source_event_id,season_id,id) WHERE projection_source_event_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_score_events_season_member
+      ON score_events(season_member_id,effective_at,id) WHERE season_member_id IS NOT NULL;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_effective_at_validate_insert
+    BEFORE INSERT ON score_events
+    WHEN NOT (${strictCanonicalUtc("NEW.created_at")} OR ${strictLegacyUtc("NEW.created_at")})
+      OR (NEW.effective_at IS NOT NULL AND NOT ${strictCanonicalUtc("NEW.effective_at")})
+    BEGIN SELECT RAISE(ABORT,'score event created or effective time invalid'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_effective_at_insert
+    AFTER INSERT ON score_events
+    WHEN NEW.effective_at IS NULL
+    BEGIN UPDATE score_events SET effective_at=strftime('%Y-%m-%dT%H:%M:%fZ',NEW.created_at) WHERE id=NEW.id; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_effective_at_immutable
+    BEFORE UPDATE OF effective_at ON score_events
+    WHEN OLD.effective_at IS NOT NULL AND NEW.effective_at IS NOT OLD.effective_at
+    BEGIN SELECT RAISE(ABORT,'score event effective time is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_leagues_owner_update
+    BEFORE UPDATE OF owner_user_id ON leagues
+    WHEN NOT EXISTS (SELECT 1 FROM league_memberships m
+      WHERE m.league_id=OLD.id AND m.user_id=NEW.owner_user_id AND m.left_at IS NULL)
+    BEGIN SELECT RAISE(ABORT,'league owner membership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_owner_membership_update
+    BEFORE UPDATE OF league_id,user_id,left_at ON league_memberships
+    WHEN OLD.left_at IS NULL
+      AND EXISTS (SELECT 1 FROM leagues l WHERE l.id=OLD.league_id AND l.owner_user_id=OLD.user_id)
+      AND (NEW.league_id<>OLD.league_id OR NEW.user_id<>OLD.user_id OR NEW.left_at IS NOT NULL)
+    BEGIN SELECT RAISE(ABORT,'league owner membership cannot be closed or moved'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_owner_membership_delete
+    BEFORE DELETE ON league_memberships
+    WHEN OLD.left_at IS NULL
+      AND EXISTS (SELECT 1 FROM leagues l WHERE l.id=OLD.league_id AND l.owner_user_id=OLD.user_id)
+    BEGIN SELECT RAISE(ABORT,'league owner membership cannot be deleted'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_membership_identity_immutable
+    BEFORE UPDATE OF league_id,user_id,joined_at ON league_memberships
+    WHEN NEW.league_id IS NOT OLD.league_id OR NEW.user_id IS NOT OLD.user_id OR NEW.joined_at IS NOT OLD.joined_at
+    BEGIN SELECT RAISE(ABORT,'league membership episode identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_membership_close_once
+    BEFORE UPDATE OF left_at ON league_memberships
+    WHEN OLD.left_at IS NOT NULL OR NEW.left_at IS NULL
+    BEGIN SELECT RAISE(ABORT,'league membership episode closure is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_membership_delete
+    BEFORE DELETE ON league_memberships
+    BEGIN SELECT RAISE(ABORT,'league membership episodes are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_memberships_overlap_insert
+    BEFORE INSERT ON league_memberships
+    WHEN EXISTS (SELECT 1 FROM league_memberships m WHERE m.league_id=NEW.league_id AND m.user_id=NEW.user_id
+      AND NEW.joined_at < COALESCE(m.left_at,'9999-12-31T23:59:59.999Z')
+      AND m.joined_at < COALESCE(NEW.left_at,'9999-12-31T23:59:59.999Z'))
+    BEGIN SELECT RAISE(ABORT,'league membership tenure overlap'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_memberships_overlap_update
+    BEFORE UPDATE OF league_id,user_id,joined_at,left_at ON league_memberships
+    WHEN EXISTS (SELECT 1 FROM league_memberships m WHERE m.id<>OLD.id AND m.league_id=NEW.league_id AND m.user_id=NEW.user_id
+      AND NEW.joined_at < COALESCE(m.left_at,'9999-12-31T23:59:59.999Z')
+      AND m.joined_at < COALESCE(NEW.left_at,'9999-12-31T23:59:59.999Z'))
+    BEGIN SELECT RAISE(ABORT,'league membership tenure overlap'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_membership_cutoff_update
+    BEFORE UPDATE OF league_id,user_id,left_at ON league_memberships
+    WHEN EXISTS (SELECT 1 FROM season_members sm JOIN seasons s ON s.id=sm.season_id
+      WHERE sm.membership_id=OLD.id AND (NEW.league_id<>s.league_id OR NEW.user_id<>sm.user_id
+        OR (NEW.left_at IS NOT NULL AND NEW.left_at<s.ends_at AND (sm.eligible_until IS NULL OR sm.eligible_until>NEW.left_at))))
+    BEGIN SELECT RAISE(ABORT,'season participant cutoff mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invites_creator_insert
+    BEFORE INSERT ON league_invites
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id
+      AND (l.owner_user_id=NEW.created_by_user_id OR EXISTS (SELECT 1 FROM league_memberships m
+        WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'league invite creator ownership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invites_creator_update
+    BEFORE UPDATE OF league_id,created_by_user_id ON league_invites
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id
+      AND (l.owner_user_id=NEW.created_by_user_id OR EXISTS (SELECT 1 FROM league_memberships m
+        WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'league invite creator ownership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_leagues_delete
+    BEFORE DELETE ON leagues
+    BEGIN SELECT RAISE(ABORT,'leagues are archived, not deleted'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invites_delete
+    BEFORE DELETE ON league_invites
+    BEGIN SELECT RAISE(ABORT,'league invites are revoked, not deleted'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invite_uses_insert
+    BEFORE INSERT ON league_invite_uses
+    WHEN NOT EXISTS (SELECT 1 FROM league_invites i JOIN league_memberships m ON m.id=NEW.membership_id
+      WHERE i.id=NEW.invite_id AND m.league_id=i.league_id AND m.user_id=NEW.user_id
+        AND i.revoked_at IS NULL AND NEW.used_at<i.expires_at
+        AND m.joined_at<=NEW.used_at AND (m.left_at IS NULL OR NEW.used_at<=m.left_at))
+      OR (SELECT COUNT(*) FROM league_invite_uses u WHERE u.invite_id=NEW.invite_id) >=
+         (SELECT max_uses FROM league_invites WHERE id=NEW.invite_id)
+    BEGIN SELECT RAISE(ABORT,'league invite use capacity or ownership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invite_uses_immutable
+    BEFORE UPDATE ON league_invite_uses
+    BEGIN SELECT RAISE(ABORT,'league invite uses are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invite_uses_delete
+    BEFORE DELETE ON league_invite_uses
+    BEGIN SELECT RAISE(ABORT,'league invite use audit is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invites_identity_immutable
+    BEFORE UPDATE OF league_id,created_by_user_id,token_hash,max_uses,expires_at ON league_invites
+    WHEN NEW.league_id IS NOT OLD.league_id OR NEW.created_by_user_id IS NOT OLD.created_by_user_id
+      OR NEW.token_hash IS NOT OLD.token_hash OR NEW.max_uses IS NOT OLD.max_uses
+      OR NEW.expires_at IS NOT OLD.expires_at
+    BEGIN SELECT RAISE(ABORT,'league invite identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_league_invites_revoke_once
+    BEFORE UPDATE OF revoked_at ON league_invites
+    WHEN OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL
+    BEGIN SELECT RAISE(ABORT,'league invite revocation is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_lifecycle_insert
+    BEFORE INSERT ON seasons
+    WHEN NEW.finalized_at IS NOT NULL OR NEW.cancelled_at IS NOT NULL
+    BEGIN SELECT RAISE(ABORT,'season lifecycle transitions cannot be pre-applied'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_creator_insert
+    BEFORE INSERT ON seasons
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id
+      AND (l.owner_user_id=NEW.created_by_user_id OR EXISTS (SELECT 1 FROM league_memberships m
+        WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'season creator ownership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_creator_update
+    BEFORE UPDATE OF league_id,created_by_user_id ON seasons
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id
+      AND (l.owner_user_id=NEW.created_by_user_id OR EXISTS (SELECT 1 FROM league_memberships m
+        WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'season creator ownership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_overlap_insert
+    BEFORE INSERT ON seasons
+    WHEN NEW.cancelled_at IS NULL AND EXISTS (SELECT 1 FROM seasons s WHERE s.league_id=NEW.league_id
+      AND s.cancelled_at IS NULL AND NEW.starts_at<s.ends_at AND s.starts_at<NEW.ends_at)
+    BEGIN SELECT RAISE(ABORT,'noncancelled season overlap'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_overlap_update
+    BEFORE UPDATE OF league_id,starts_at,ends_at,cancelled_at ON seasons
+    WHEN NEW.cancelled_at IS NULL AND EXISTS (SELECT 1 FROM seasons s WHERE s.id<>OLD.id AND s.league_id=NEW.league_id
+      AND s.cancelled_at IS NULL AND NEW.starts_at<s.ends_at AND s.starts_at<NEW.ends_at)
+    BEGIN SELECT RAISE(ABORT,'noncancelled season overlap'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_participant_lock_update
+    BEFORE UPDATE OF participants_locked_at ON seasons
+    WHEN (OLD.participants_locked_at IS NOT NULL AND NEW.participants_locked_at IS NOT OLD.participants_locked_at)
+      OR (NEW.participants_locked_at IS NOT NULL AND NEW.participants_locked_at<NEW.starts_at)
+    BEGIN SELECT RAISE(ABORT,'season participant lock is immutable or before season start'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_finalize_requires_snapshot
+    BEFORE UPDATE OF finalized_at ON seasons
+    WHEN NEW.finalized_at IS NOT NULL AND NEW.participants_locked_at IS NULL
+    BEGIN SELECT RAISE(ABORT,'season participant snapshot must be locked before finalization'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_finalize_once
+    BEFORE UPDATE OF finalized_at ON seasons
+    WHEN OLD.finalized_at IS NOT NULL OR NEW.finalized_at IS NULL
+    BEGIN SELECT RAISE(ABORT,'season finalization is irreversible'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_cancel_once
+    BEFORE UPDATE OF cancelled_at ON seasons
+    WHEN OLD.cancelled_at IS NOT NULL OR NEW.cancelled_at IS NULL
+    BEGIN SELECT RAISE(ABORT,'season cancellation is irreversible'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_finalized_immutable
+    BEFORE UPDATE ON seasons
+    WHEN OLD.finalized_at IS NOT NULL
+    BEGIN SELECT RAISE(ABORT,'finalized season is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_cancelled_immutable
+    BEFORE UPDATE ON seasons
+    WHEN OLD.cancelled_at IS NOT NULL
+    BEGIN SELECT RAISE(ABORT,'cancelled season is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_delete
+    BEFORE DELETE ON seasons
+    BEGIN SELECT RAISE(ABORT,'season records are immutable; cancel scheduled seasons'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_seasons_started_settings_update
+    BEFORE UPDATE OF league_id,mode,timezone,rule_version,starts_at,ends_at ON seasons
+    WHEN (OLD.starts_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now') OR EXISTS (SELECT 1 FROM season_members WHERE season_id=OLD.id))
+      AND (NEW.league_id<>OLD.league_id OR NEW.mode<>OLD.mode OR NEW.timezone<>OLD.timezone
+        OR NEW.rule_version<>OLD.rule_version OR NEW.starts_at<>OLD.starts_at OR NEW.ends_at<>OLD.ends_at)
+    BEGIN SELECT RAISE(ABORT,'started season settings are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_set_insert
+    BEFORE INSERT ON season_members
+    WHEN EXISTS (SELECT 1 FROM seasons s WHERE s.id=NEW.season_id
+      AND (s.participants_locked_at IS NOT NULL OR s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'season participant set is locked or frozen'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_owner_insert
+    BEFORE INSERT ON season_members
+    WHEN NOT EXISTS (SELECT 1 FROM seasons s JOIN league_memberships m ON m.id=NEW.membership_id
+      WHERE s.id=NEW.season_id AND m.league_id=s.league_id AND m.user_id=NEW.user_id
+        AND m.joined_at<s.starts_at AND (m.left_at IS NULL OR m.left_at>s.starts_at)
+        AND NEW.eligible_from=s.starts_at AND (NEW.eligible_until IS NULL OR NEW.eligible_until<=s.ends_at)
+        AND (m.left_at IS NULL OR m.left_at>=s.ends_at OR NEW.eligible_until IS NOT NULL AND NEW.eligible_until<=m.left_at))
+    BEGIN SELECT RAISE(ABORT,'season participant ownership or cutoff mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_snapshot_immutable
+    BEFORE UPDATE OF season_id,membership_id,user_id,username_snapshot,eligible_from ON season_members
+    WHEN NEW.season_id IS NOT OLD.season_id OR NEW.membership_id IS NOT OLD.membership_id
+      OR NEW.user_id IS NOT OLD.user_id OR NEW.username_snapshot IS NOT OLD.username_snapshot
+      OR NEW.eligible_from IS NOT OLD.eligible_from
+    BEGIN SELECT RAISE(ABORT,'season participant snapshot is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_cutoff_once
+    BEFORE UPDATE OF eligible_until ON season_members
+    WHEN OLD.eligible_until IS NOT NULL OR NEW.eligible_until IS NULL
+    BEGIN SELECT RAISE(ABORT,'season participant cutoff is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_delete
+    BEFORE DELETE ON season_members
+    WHEN EXISTS (SELECT 1 FROM seasons s WHERE s.id=OLD.season_id
+      AND (s.participants_locked_at IS NOT NULL OR s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'season participant set is locked or frozen'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_owner_update
+    BEFORE UPDATE OF season_id,membership_id,user_id,eligible_from,eligible_until ON season_members
+    WHEN NOT EXISTS (SELECT 1 FROM seasons s JOIN league_memberships m ON m.id=NEW.membership_id
+      WHERE s.id=NEW.season_id AND m.league_id=s.league_id AND m.user_id=NEW.user_id
+        AND m.joined_at<s.starts_at AND (m.left_at IS NULL OR m.left_at>s.starts_at)
+        AND NEW.eligible_from=s.starts_at AND (NEW.eligible_until IS NULL OR NEW.eligible_until<=s.ends_at)
+        AND (m.left_at IS NULL OR m.left_at>=s.ends_at OR NEW.eligible_until IS NOT NULL AND NEW.eligible_until<=m.left_at))
+    BEGIN SELECT RAISE(ABORT,'season participant ownership or cutoff mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_insert
+    BEFORE INSERT ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)=''
+        OR NEW.provider_connection_id IS NULL OR trim(NEW.provider_connection_id)=''
+        OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_update
+    BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)=''
+        OR NEW.provider_connection_id IS NULL OR trim(NEW.provider_connection_id)=''
+        OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_provider_tuple_immutable
+    BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN OLD.provider_event_id IS NOT NULL AND
+      (NEW.source IS NOT OLD.source OR NEW.provider_service IS NOT OLD.provider_service
+        OR NEW.provider_connection_id IS NOT OLD.provider_connection_id OR NEW.provider_event_id IS NOT OLD.provider_event_id)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_ledger_identity_immutable
+    BEFORE UPDATE OF event_key,user_id,watch_id,achievement_id,season_id,category,points,rule_version,metadata_json,created_at,reverses_event_id,projection_source_event_id,season_member_id ON score_events
+    WHEN NEW.event_key IS NOT OLD.event_key OR NEW.user_id IS NOT OLD.user_id OR NEW.watch_id IS NOT OLD.watch_id
+      OR NEW.achievement_id IS NOT OLD.achievement_id OR NEW.season_id IS NOT OLD.season_id
+      OR NEW.category IS NOT OLD.category OR NEW.points IS NOT OLD.points OR NEW.rule_version IS NOT OLD.rule_version
+      OR NEW.metadata_json IS NOT OLD.metadata_json OR NEW.created_at IS NOT OLD.created_at
+      OR NEW.reverses_event_id IS NOT OLD.reverses_event_id
+      OR NEW.projection_source_event_id IS NOT OLD.projection_source_event_id
+      OR NEW.season_member_id IS NOT OLD.season_member_id
+    BEGIN SELECT RAISE(ABORT,'score event source/owner mismatch; ledger identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversal_shape_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM score_events parent WHERE parent.id=NEW.reverses_event_id
+        AND NEW.user_id=parent.user_id AND NEW.watch_id IS parent.watch_id
+        AND NEW.achievement_id IS parent.achievement_id AND NEW.season_id IS parent.season_id
+        AND NEW.projection_source_event_id IS parent.projection_source_event_id
+        AND NEW.season_member_id IS parent.season_member_id AND NEW.category=parent.category
+        AND NEW.points=-parent.points AND NEW.rule_version=parent.rule_version
+        AND NEW.effective_at=parent.effective_at
+        AND (parent.reverses_event_id IS NULL OR
+          (parent.season_id IS NOT NULL AND parent.projection_source_event_id IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'score reversal does not exactly compensate its parent'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversal_marks_parent
+    AFTER INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL
+    BEGIN UPDATE score_events SET reversed_at=NEW.created_at WHERE id=NEW.reverses_event_id AND reversed_at IS NULL; END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_reversed_at_once
+    BEFORE UPDATE OF reversed_at ON score_events
+    WHEN OLD.reversed_at IS NOT NULL OR NEW.reversed_at IS NULL
+      OR NOT EXISTS (SELECT 1 FROM score_events child
+        WHERE child.reverses_event_id=OLD.id AND child.created_at=NEW.reversed_at)
+    BEGIN SELECT RAISE(ABORT,'score reversal marker is derived and immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_projection_copy_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL
+      AND NEW.projection_source_event_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM score_events src
+        JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id
+        JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id
+          AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL
+          AND src.reverses_event_id IS NULL AND src.reversed_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id
+          AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1
+          AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from
+          AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service
+              AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case
+              JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge'
+                AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged'
+                AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy its lifetime source'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_season_frozen_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons s
+      WHERE s.id=NEW.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'finalized or cancelled season standings are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_season_frozen_update
+    BEFORE UPDATE ON score_events
+    WHEN OLD.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons s
+      WHERE s.id=OLD.season_id AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'finalized or cancelled season standings are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_delete
+    BEFORE DELETE ON score_events
+    BEGIN SELECT RAISE(ABORT,'score ledger rows are append-only'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_frozen_update
+    BEFORE UPDATE ON season_members
+    WHEN EXISTS (SELECT 1 FROM seasons s WHERE s.id=OLD.season_id
+      AND (s.finalized_at IS NOT NULL OR s.cancelled_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'finalized or cancelled season participants are immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_season_integrity_insert
+    BEFORE INSERT ON score_events
+    WHEN (NEW.season_id IS NULL AND (NEW.projection_source_event_id IS NOT NULL OR NEW.season_member_id IS NOT NULL))
+      OR (NEW.season_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM seasons s WHERE s.id=NEW.season_id))
+      OR (NEW.season_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM season_members sm
+            WHERE sm.id=NEW.season_member_id AND sm.season_id=NEW.season_id AND sm.user_id=NEW.user_id))
+      OR (NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL
+            AND NEW.category IN ('watch_first','watch_rewatch','watch_cooldown') AND NEW.projection_source_event_id IS NULL)
+      OR (NEW.projection_source_event_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM score_events src
+            WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.user_id=NEW.user_id
+              AND src.watch_id IS NOT NULL AND src.watch_id=NEW.watch_id))
+    BEGIN SELECT RAISE(ABORT,'score event season projection source or participant mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_season_integrity_update
+    BEFORE UPDATE OF user_id,watch_id,season_id,projection_source_event_id,season_member_id ON score_events
+    WHEN (NEW.season_id IS NULL AND (NEW.projection_source_event_id IS NOT NULL OR NEW.season_member_id IS NOT NULL))
+      OR (NEW.season_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM seasons s WHERE s.id=NEW.season_id))
+      OR (NEW.season_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM season_members sm
+            WHERE sm.id=NEW.season_member_id AND sm.season_id=NEW.season_id AND sm.user_id=NEW.user_id))
+      OR (NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL
+            AND NEW.category IN ('watch_first','watch_rewatch','watch_cooldown') AND NEW.projection_source_event_id IS NULL)
+      OR (NEW.projection_source_event_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM score_events src
+            WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.user_id=NEW.user_id
+              AND src.watch_id IS NOT NULL AND src.watch_id=NEW.watch_id))
+      OR EXISTS (SELECT 1 FROM score_events child WHERE child.projection_source_event_id=OLD.id
+            AND (NEW.season_id IS NOT NULL OR child.user_id IS NOT NEW.user_id OR child.watch_id IS NOT NEW.watch_id))
+    BEGIN SELECT RAISE(ABORT,'score event season projection source or participant mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_season_members_score_owner_update
+    BEFORE UPDATE OF season_id,user_id ON season_members
+    WHEN EXISTS (SELECT 1 FROM score_events e WHERE e.season_member_id=OLD.id
+      AND (e.season_id<>NEW.season_id OR e.user_id<>NEW.user_id))
+    BEGIN SELECT RAISE(ABORT,'season participant has mismatched score rows'); END;
+  `);
+
+  const strictTimestampColumns = {
+    leagues: { required: ["created_at","updated_at"], nullable: ["archived_at"] },
+    league_memberships: { required: ["joined_at","created_at"], nullable: ["left_at"] },
+    league_invites: { required: ["expires_at","created_at"], nullable: ["revoked_at"] },
+    league_invite_uses: { required: ["used_at"], nullable: [] },
+    seasons: { required: ["starts_at","ends_at","created_at","updated_at"], nullable: ["cancelled_at","finalized_at","participants_locked_at"] },
+    season_members: { required: ["eligible_from","created_at"], nullable: ["eligible_until"] },
+  };
+  for (const [table, columns] of Object.entries(strictTimestampColumns)) {
+    const invalid = [
+      ...columns.required.map((column) => `NOT ${strictCanonicalUtc(`NEW.${column}`)}`),
+      ...columns.nullable.map((column) => `(NEW.${column} IS NOT NULL AND NOT ${strictCanonicalUtc(`NEW.${column}`)})`),
+    ].join(" OR ");
+    const watched = [...columns.required, ...columns.nullable].join(",");
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${table}_strict_time_insert BEFORE INSERT ON ${table}
+      WHEN ${invalid} BEGIN SELECT RAISE(ABORT,'${table} timestamp invalid'); END;
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_strict_time_update BEFORE UPDATE OF ${watched} ON ${table}
+      WHEN ${invalid} BEGIN SELECT RAISE(ABORT,'${table} timestamp invalid'); END;`);
+  }
+
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (9)").run();
+}
+
+function migration10() {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_insert;
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_update;
+    DROP TRIGGER IF EXISTS trg_watches_provider_tuple_immutable;
+    DROP TRIGGER IF EXISTS trg_score_events_reversal_shape_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_reversal_marks_parent;
+    DROP TRIGGER IF EXISTS trg_score_events_reversed_at_once;
+    DROP TRIGGER IF EXISTS trg_score_events_projection_copy_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_season_frozen_insert;
+    DROP TRIGGER IF EXISTS trg_score_events_season_frozen_update;
+
+    CREATE TRIGGER trg_watches_provider_tuple_insert BEFORE INSERT ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)='' OR NEW.provider_connection_id IS NULL
+        OR trim(NEW.provider_connection_id)='' OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+    CREATE TRIGGER trg_watches_provider_tuple_update BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN (NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL)
+      AND (NEW.provider_service IS NULL OR trim(NEW.provider_service)='' OR NEW.provider_connection_id IS NULL
+        OR trim(NEW.provider_connection_id)='' OR NEW.provider_event_id IS NULL OR trim(NEW.provider_event_id)=''
+        OR NEW.source='manual' OR NEW.source<>NEW.provider_service)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is incomplete or inconsistent'); END;
+    CREATE TRIGGER trg_watches_provider_tuple_immutable BEFORE UPDATE OF source,provider_service,provider_connection_id,provider_event_id ON watches
+    WHEN OLD.provider_event_id IS NOT NULL AND (NEW.source IS NOT OLD.source OR NEW.provider_service IS NOT OLD.provider_service
+      OR NEW.provider_connection_id IS NOT OLD.provider_connection_id OR NEW.provider_event_id IS NOT OLD.provider_event_id)
+    BEGIN SELECT RAISE(ABORT,'provider watch identity is immutable'); END;
+
+    CREATE TRIGGER trg_score_events_reversal_shape_insert BEFORE INSERT ON score_events
+    WHEN NEW.reverses_event_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM score_events parent WHERE parent.id=NEW.reverses_event_id
+        AND NEW.user_id=parent.user_id AND NEW.watch_id IS parent.watch_id AND NEW.achievement_id IS parent.achievement_id
+        AND NEW.season_id IS parent.season_id AND NEW.projection_source_event_id IS parent.projection_source_event_id
+        AND NEW.season_member_id IS parent.season_member_id AND NEW.category=parent.category
+        AND NEW.points=-parent.points AND NEW.rule_version=parent.rule_version AND NEW.effective_at=parent.effective_at
+        AND (parent.reverses_event_id IS NULL OR (parent.season_id IS NOT NULL AND parent.projection_source_event_id IS NOT NULL)))
+    BEGIN SELECT RAISE(ABORT,'score reversal does not exactly compensate its parent'); END;
+    CREATE TRIGGER trg_score_events_reversal_marks_parent AFTER INSERT ON score_events WHEN NEW.reverses_event_id IS NOT NULL
+    BEGIN UPDATE score_events SET reversed_at=NEW.created_at WHERE id=NEW.reverses_event_id AND reversed_at IS NULL; END;
+    CREATE TRIGGER trg_score_events_reversed_at_once BEFORE UPDATE OF reversed_at ON score_events
+    WHEN OLD.reversed_at IS NOT NULL OR NEW.reversed_at IS NULL OR NOT EXISTS (
+      SELECT 1 FROM score_events child WHERE child.reverses_event_id=OLD.id AND child.created_at=NEW.reversed_at)
+    BEGIN SELECT RAISE(ABORT,'score reversal marker is derived and immutable'); END;
+
+    CREATE TRIGGER trg_score_events_projection_copy_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL AND NEW.projection_source_event_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM score_events src JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.reverses_event_id IS NULL
+          AND src.reversed_at IS NULL AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1 AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge' AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged' AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy an eligible lifetime source'); END;
+
+    CREATE TRIGGER trg_score_events_season_frozen_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons season JOIN leagues league ON league.id=season.league_id
+      WHERE season.id=NEW.season_id AND (season.finalized_at IS NOT NULL OR season.cancelled_at IS NOT NULL OR league.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'finalized, cancelled, or archived season standings are immutable'); END;
+    CREATE TRIGGER trg_score_events_season_frozen_update BEFORE UPDATE ON score_events
+    WHEN OLD.season_id IS NOT NULL AND EXISTS (SELECT 1 FROM seasons season JOIN leagues league ON league.id=season.league_id
+      WHERE season.id=OLD.season_id AND (season.finalized_at IS NOT NULL OR season.cancelled_at IS NOT NULL OR league.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'finalized, cancelled, or archived season standings are immutable'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (10)").run();
+}
+
+// Audit records are immutable after insertion so security history cannot be rewritten.
+function migration11() {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_insert
+    BEFORE INSERT ON audit_log
+    WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM audit_log WHERE id=NEW.id)
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_update
+    BEFORE UPDATE ON audit_log
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_append_only_delete
+    BEFORE DELETE ON audit_log
+    BEGIN SELECT RAISE(ABORT,'audit log is append-only'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (11)").run();
+}
+
+// Placeholder reconciliation keeps provider proof on the deleted provider watch.
+function migration12() {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_score_events_projection_copy_insert;
+    CREATE TRIGGER trg_score_events_projection_copy_insert BEFORE INSERT ON score_events
+    WHEN NEW.season_id IS NOT NULL AND NEW.reverses_event_id IS NULL AND NEW.projection_source_event_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM score_events src JOIN watches w ON w.id=src.watch_id AND w.user_id=src.user_id
+        JOIN seasons season ON season.id=NEW.season_id JOIN leagues league ON league.id=season.league_id
+        JOIN season_members member ON member.id=NEW.season_member_id AND member.season_id=season.id AND member.user_id=src.user_id
+        WHERE src.id=NEW.projection_source_event_id AND src.season_id IS NULL AND src.reverses_event_id IS NULL
+          AND src.reversed_at IS NULL AND NOT EXISTS (SELECT 1 FROM score_events child WHERE child.reverses_event_id=src.id)
+          AND NEW.user_id=src.user_id AND NEW.watch_id=src.watch_id AND NEW.category=src.category AND NEW.points=src.points
+          AND NEW.rule_version=src.rule_version AND NEW.effective_at=src.effective_at
+          AND src.category IN ('watch_first','watch_rewatch','watch_cooldown')
+          AND NEW.event_key='season/'||season.id||'/watch-event/'||src.id
+          AND w.deleted_at IS NULL AND w.qualifies_for_season=1 AND season.participants_locked_at IS NOT NULL
+          AND season.cancelled_at IS NULL AND season.finalized_at IS NULL AND league.archived_at IS NULL
+          AND src.effective_at>=season.starts_at AND src.effective_at<season.ends_at
+          AND src.effective_at>=member.eligible_from AND src.effective_at<COALESCE(member.eligible_until,season.ends_at)
+          AND (season.mode<>'verified' OR
+            (w.source<>'manual' AND w.source=w.provider_service AND w.provider_connection_id IS NOT NULL AND w.provider_event_id IS NOT NULL)
+            OR EXISTS (
+              SELECT 1 FROM watches placeholder_provider
+              WHERE placeholder_provider.user_id=w.user_id AND placeholder_provider.logical_canonical_watch_id=w.id
+                AND placeholder_provider.deleted_at IS NOT NULL AND placeholder_provider.deleted_reason='placeholder_reconciled'
+                AND placeholder_provider.source<>'manual' AND placeholder_provider.source=placeholder_provider.provider_service
+                AND placeholder_provider.provider_connection_id IS NOT NULL AND placeholder_provider.provider_event_id IS NOT NULL)
+            OR (w.source='manual' AND EXISTS (
+              SELECT 1 FROM duplicate_cases duplicate_case JOIN watches provider_watch ON provider_watch.id=duplicate_case.candidate_watch_id
+              WHERE duplicate_case.user_id=w.user_id AND duplicate_case.canonical_watch_id=w.id
+                AND duplicate_case.status='resolved' AND duplicate_case.resolution='merge' AND duplicate_case.cancelled_at IS NULL
+                AND provider_watch.user_id=w.user_id AND provider_watch.deleted_at IS NOT NULL
+                AND provider_watch.deleted_reason='duplicate_merged' AND provider_watch.logical_canonical_watch_id=w.id
+                AND provider_watch.source<>'manual' AND provider_watch.source=provider_watch.provider_service
+                AND provider_watch.provider_connection_id IS NOT NULL AND provider_watch.provider_event_id IS NOT NULL))))
+    BEGIN SELECT RAISE(ABORT,'season projection does not exactly copy an eligible lifetime source'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (12)").run();
+}
+
+
+// Challenge definitions and immutable season assignment/completion records.
+function migration13() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS challenge_definitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL CHECK(length(slug) BETWEEN 1 AND 64 AND substr(slug,1,1) GLOB '[a-z0-9]' AND slug NOT GLOB '*[^a-z0-9_-]*'),
+      title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 100),
+      description TEXT CHECK(description IS NULL OR length(description) <= 1000),
+      points INTEGER NOT NULL CHECK(points BETWEEN 1 AND 10000),
+      rule_version TEXT NOT NULL CHECK(length(trim(rule_version)) BETWEEN 1 AND 64),
+      created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      archived_at TEXT CHECK(archived_at IS NULL OR (archived_at GLOB '????-??-??T??:??:??.???Z' AND julianday(archived_at) IS NOT NULL)),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(updated_at GLOB '????-??-??T??:??:??.???Z' AND julianday(updated_at) IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_challenge_definitions_league_slug_active
+      ON challenge_definitions(league_id,slug) WHERE archived_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_challenge_definitions_league ON challenge_definitions(league_id,archived_at,id);
+
+    CREATE TABLE IF NOT EXISTS challenge_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season_id INTEGER NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+      challenge_definition_id INTEGER NOT NULL REFERENCES challenge_definitions(id) ON DELETE RESTRICT,
+      season_member_id INTEGER NOT NULL REFERENCES season_members(id) ON DELETE RESTRICT,
+      assigned_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      challenge_slug_snapshot TEXT NOT NULL CHECK(length(challenge_slug_snapshot) BETWEEN 1 AND 64 AND substr(challenge_slug_snapshot,1,1) GLOB '[a-z0-9]' AND challenge_slug_snapshot NOT GLOB '*[^a-z0-9_-]*'),
+      challenge_title_snapshot TEXT NOT NULL CHECK(length(trim(challenge_title_snapshot)) BETWEEN 1 AND 100),
+      challenge_description_snapshot TEXT CHECK(challenge_description_snapshot IS NULL OR length(challenge_description_snapshot) <= 1000),
+      challenge_points_snapshot INTEGER NOT NULL CHECK(challenge_points_snapshot BETWEEN 1 AND 10000),
+      challenge_rule_version_snapshot TEXT NOT NULL CHECK(length(trim(challenge_rule_version_snapshot)) BETWEEN 1 AND 64),
+      status TEXT NOT NULL CHECK(status IN ('pending','completed','cancelled')),
+      assigned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(assigned_at GLOB '????-??-??T??:??:??.???Z' AND julianday(assigned_at) IS NOT NULL),
+      completed_at TEXT CHECK(completed_at IS NULL OR (completed_at GLOB '????-??-??T??:??:??.???Z' AND julianday(completed_at) IS NOT NULL)),
+      cancelled_at TEXT CHECK(cancelled_at IS NULL OR (cancelled_at GLOB '????-??-??T??:??:??.???Z' AND julianday(cancelled_at) IS NOT NULL)),
+      score_event_id INTEGER UNIQUE REFERENCES score_events(id) ON DELETE RESTRICT,
+      evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
+      UNIQUE(season_id,challenge_definition_id,season_member_id),
+      CHECK((status='pending' AND completed_at IS NULL AND cancelled_at IS NULL AND score_event_id IS NULL)
+        OR (status='completed' AND completed_at IS NOT NULL AND cancelled_at IS NULL AND score_event_id IS NOT NULL)
+        OR (status='cancelled' AND completed_at IS NULL AND cancelled_at IS NOT NULL AND score_event_id IS NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_challenge_assignments_season_status ON challenge_assignments(season_id,status,id);
+    CREATE INDEX IF NOT EXISTS idx_challenge_assignments_member ON challenge_assignments(season_member_id,status,id);
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_definitions_owner_insert
+    BEFORE INSERT ON challenge_definitions
+    WHEN NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=NEW.league_id AND (l.owner_user_id=NEW.created_by_user_id
+      OR EXISTS (SELECT 1 FROM league_memberships m WHERE m.league_id=l.id AND m.user_id=NEW.created_by_user_id AND m.left_at IS NULL AND m.role='admin')))
+    BEGIN SELECT RAISE(ABORT,'challenge definition creator membership mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_insert
+    BEFORE INSERT ON challenge_assignments
+    WHEN NOT EXISTS (SELECT 1 FROM seasons s JOIN challenge_definitions d ON d.id=NEW.challenge_definition_id
+      JOIN season_members sm ON sm.id=NEW.season_member_id
+      WHERE s.id=NEW.season_id AND d.league_id=s.league_id AND sm.season_id=s.id
+        AND NEW.challenge_slug_snapshot=d.slug AND NEW.challenge_title_snapshot=d.title
+        AND NEW.challenge_description_snapshot IS d.description AND NEW.challenge_points_snapshot=d.points
+        AND NEW.challenge_rule_version_snapshot=d.rule_version
+        AND s.mode='challenge' AND s.participants_locked_at IS NOT NULL AND s.cancelled_at IS NULL AND s.finalized_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM leagues l WHERE l.id=s.league_id AND l.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'challenge assignment season or participant mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_completion_update
+    BEFORE UPDATE OF status,completed_at,cancelled_at,score_event_id ON challenge_assignments
+    WHEN NEW.status='completed' AND NOT EXISTS (SELECT 1 FROM score_events e JOIN season_members sm ON sm.id=NEW.season_member_id
+      WHERE e.id=NEW.score_event_id AND e.user_id=sm.user_id AND e.season_id=NEW.season_id AND e.season_member_id=NEW.season_member_id
+        AND e.category='challenge_bonus' AND e.points=NEW.challenge_points_snapshot AND e.rule_version=NEW.challenge_rule_version_snapshot
+        AND e.reverses_event_id IS NULL)
+    BEGIN SELECT RAISE(ABORT,'challenge completion score event mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_identity_immutable
+    BEFORE UPDATE OF season_id,challenge_definition_id,season_member_id,assigned_by_user_id,assigned_at,
+      challenge_slug_snapshot,challenge_title_snapshot,challenge_description_snapshot,challenge_points_snapshot,challenge_rule_version_snapshot
+    ON challenge_assignments
+    WHEN NEW.season_id IS NOT OLD.season_id OR NEW.challenge_definition_id IS NOT OLD.challenge_definition_id
+      OR NEW.season_member_id IS NOT OLD.season_member_id OR NEW.assigned_by_user_id IS NOT OLD.assigned_by_user_id
+      OR NEW.assigned_at IS NOT OLD.assigned_at OR NEW.challenge_slug_snapshot IS NOT OLD.challenge_slug_snapshot
+      OR NEW.challenge_title_snapshot IS NOT OLD.challenge_title_snapshot OR NEW.challenge_description_snapshot IS NOT OLD.challenge_description_snapshot
+      OR NEW.challenge_points_snapshot IS NOT OLD.challenge_points_snapshot OR NEW.challenge_rule_version_snapshot IS NOT OLD.challenge_rule_version_snapshot
+    BEGIN SELECT RAISE(ABORT,'challenge assignment identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_frozen_update
+    BEFORE UPDATE OF status,completed_at,cancelled_at,score_event_id,evidence_json ON challenge_assignments
+    WHEN EXISTS (SELECT 1 FROM seasons s JOIN leagues l ON l.id=s.league_id
+      WHERE s.id=OLD.season_id AND (s.cancelled_at IS NOT NULL OR s.finalized_at IS NOT NULL OR l.archived_at IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'challenge assignment season is frozen'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_challenge_assignments_delete
+    BEFORE DELETE ON challenge_assignments
+    BEGIN SELECT RAISE(ABORT,'challenge assignments are immutable'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (13)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 8 } = {}) {
-  const latestVersion = 8;
+export function runMigrations({ skipBackup = false, targetVersion = 13 } = {}) {
+  const latestVersion = 13;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -713,10 +1548,13 @@ export function runMigrations({ skipBackup = false, targetVersion = 8 } = {}) {
   // including upgrades between versioned schemas.
   let backup = null;
   if (hasPendingMigration && !skipBackup) {
-    const userCount = tableExists("users")
-      ? db.prepare("SELECT COUNT(*) c FROM users").get().c
-      : 0;
-    if (userCount > 0) {
+    const applicationTables = db.prepare(`SELECT name FROM sqlite_master
+      WHERE type='table' AND substr(name,1,7)<>'sqlite_' AND name<>'schema_versions'`).all();
+    const hasApplicationRows = applicationTables.some(({ name }) => {
+      const quoted = `"${name.replaceAll('"', '""')}"`;
+      return Boolean(db.prepare(`SELECT 1 FROM ${quoted} LIMIT 1`).get());
+    });
+    if (hasApplicationRows) {
       backup = createBackup();
       if (!backup.ok) {
         throw new Error("[reelscore] Refusing to migrate: pre-migration backup failed integrity check.");
@@ -759,6 +1597,21 @@ export function runMigrations({ skipBackup = false, targetVersion = 8 } = {}) {
   }
   if (targetVersion >= 8 && !applied.has(8)) {
     db.transaction(migration8)();
+  }
+  if (targetVersion >= 9 && !applied.has(9)) {
+    db.transaction(migration9)();
+  }
+  if (targetVersion >= 10 && !applied.has(10)) {
+    db.transaction(migration10)();
+  }
+  if (targetVersion >= 11 && !applied.has(11)) {
+    db.transaction(migration11)();
+  }
+  if (targetVersion >= 12 && !applied.has(12)) {
+    db.transaction(migration12)();
+  }
+  if (targetVersion >= 13 && !applied.has(13)) {
+    db.transaction(migration13)();
   }
 
   if (process.env.APP_MODE === "hosted") {
