@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Add private league frontend views for league creation/joining, leaderboard periods, season management, invite issuance, challenge definition, assignment, completion, and dashboard progress.
 - Add private league challenge definition, assignment, completion, bonus, and dashboard API foundations.
 
 - Add private league weekly, monthly, season, and lifetime leaderboard API foundations.
