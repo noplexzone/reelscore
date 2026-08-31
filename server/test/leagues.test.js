@@ -174,7 +174,7 @@ test("leaving closes only the active episode, is idempotent, and protects owner"
   assert.throws(() => leaveLeague(ownerId, league.id), status(409, /transfer ownership/i));
 });
 
-test("mid-season departure atomically freezes the participant cutoff before closing membership", () => {
+test("mid-season departure atomically freezes the participant cutoff before closing membership", async () => {
   const { ownerId, memberId, league } = fixture();
   const membership = db.prepare("SELECT id,joined_at FROM league_memberships WHERE league_id=? AND user_id=? AND left_at IS NULL").get(league.id, memberId);
   const startsAt = new Date(new Date(membership.joined_at).getTime() + 1).toISOString();
@@ -184,6 +184,8 @@ test("mid-season departure atomically freezes the participant cutoff before clos
   db.prepare(`INSERT INTO season_members(season_id,membership_id,user_id,username_snapshot,eligible_from)
     VALUES (?,?,?,?,?)`).run(seasonId, membership.id, memberId, "member-snapshot", startsAt);
   db.prepare("UPDATE seasons SET participants_locked_at=? WHERE id=?").run(startsAt, seasonId);
+  // Keep the departure cutoff strictly after the one-millisecond season boundary.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const departure = leaveLeague(memberId, league.id);
   assert.equal(db.prepare("SELECT eligible_until FROM season_members WHERE season_id=? AND membership_id=?").get(seasonId, membership.id).eligible_until, departure.left_at);
   assert.equal(db.prepare("SELECT left_at FROM league_memberships WHERE id=?").get(membership.id).left_at, departure.left_at);
