@@ -113,7 +113,7 @@ test("migration 7 invariant failure rolls back schema and version atomically", (
 });
 
 
-test("schema-6 automatic snapshot restores and migrates to schema 13", () => {
+test("schema-6 automatic snapshot restores and migrates to schema 14", () => {
   const sourceDir = tempDir("v6-snapshot-source");
   createExactV6(sourceDir, "build-v6-snapshot");
   const migrated = runModule(sourceDir, "migrate-v6-snapshot", "module.initializeDatabase();");
@@ -131,11 +131,11 @@ test("schema-6 automatic snapshot restores and migrates to schema 13", () => {
 
   const restoreDir = tempDir("v6-snapshot-restore");
   fs.copyFileSync(snapshotPath, path.join(restoreDir, "reelscore.db"));
-  const restored = runModule(restoreDir, "restore-v6-to-v13", "module.initializeDatabase();");
+  const restored = runModule(restoreDir, "restore-v6-to-v14", "module.initializeDatabase();");
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 13);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 14);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);
@@ -176,7 +176,7 @@ test("migration 9 upgrades exact schema 8 additively, creates a backup, and is i
   const before = database.prepare(`SELECT ${baseColumns} FROM score_events ORDER BY id`).all();
   const beforeTotal = database.prepare("SELECT SUM(points) total FROM score_events WHERE season_id IS NULL").get().total;
   database.close();
-  const upgraded = runModule(dataDir, "upgrade-v9", "module.initializeDatabase(); module.runMigrations();");
+  const upgraded = runModule(dataDir, "upgrade-v9", "module.initializeDatabase({ targetVersion: 9 }); module.runMigrations({ targetVersion: 9 });");
   assert.equal(upgraded.status, 0, upgraded.stderr);
   database = new Database(dbPath, { readonly: true });
   assert.deepEqual(database.prepare("PRAGMA table_info(score_events)").all().map((row) => row.name),
@@ -331,7 +331,7 @@ test("migration 12 upgrades exact schema 11 with placeholder provider evidence a
   `);
   assert.equal(build.status, 0, build.stderr);
   const upgrade = runModule(dataDir, "upgrade-v12-placeholder", `
-    module.initializeDatabase();
+    module.initializeDatabase({ targetVersion: 13 });
     module.db.prepare("INSERT INTO score_events(event_key,user_id,watch_id,season_id,projection_source_event_id,season_member_id,category,points,rule_version,metadata_json,created_at,effective_at) VALUES ('season/1/watch-event/1',1,1,1,1,1,'watch_first',49,'competition-v1','{}','2035-01-10T12:00:00.000Z','2035-01-10T12:00:00.000Z')").run();
   `);
   assert.equal(upgrade.status, 0, upgrade.stderr);
@@ -344,7 +344,7 @@ test("migration 12 upgrades exact schema 11 with placeholder provider evidence a
 
 test("migration 13 initializes challenge definitions and assignment integrity", () => {
   const dataDir = tempDir("fresh-v13-challenges");
-  const run = runModule(dataDir, "fresh-v13-challenges", "module.initializeDatabase();");
+  const run = runModule(dataDir, "fresh-v13-challenges", "module.initializeDatabase({ targetVersion: 13 });");
   assert.equal(run.status, 0, run.stderr);
   const database = new Database(path.join(dataDir, "reelscore.db"));
   database.pragma("foreign_keys = ON");

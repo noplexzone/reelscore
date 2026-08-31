@@ -409,3 +409,16 @@ select:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color
   .league-count { font-size: 48px; }
   .challenge-complete { grid-template-columns: 1fr; }
 }
+
+/* ---- Movie diary editor ---- */
+.diary-editor { display:grid; gap:12px; margin:10px 0 16px; padding:16px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); max-width:560px; }
+.diary-editor label { display:grid; gap:5px; font-weight:700; font-size:13px; }
+.diary-editor textarea { min-height:96px; resize:vertical; font:inherit; color:var(--cream); background:var(--ink); border:1px solid var(--line); border-radius:var(--radius); padding:10px 12px; }
+.diary-editor input, .diary-editor select { min-height:44px; }
+.diary-heading, .diary-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.diary-check { display:flex !important; grid-template-columns:24px 1fr; align-items:center; min-height:44px; }
+.diary-check input { width:20px; height:20px; }
+@media (max-width:560px) { .diary-editor { padding:14px; } .diary-actions { align-items:stretch; flex-direction:column; } .diary-actions .btn { min-height:48px; } }
+
+.diary-watch-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.diary-watch-row .diary-editor { flex-basis:100%; }

@@ -103,8 +103,8 @@ cd web && npm ci && npm run dev
 # Server tests: scoring/ledger, eligibility, migrations, sync, auth, and security
 cd server && npm test
 
-# Web build verification
-cd web && npm run build
+# Web tests and build verification
+cd web && npm test && npm run build
 
 # Dependency audits
 cd server && npm audit --audit-level=high
@@ -132,12 +132,10 @@ Watches retain manual/Plex/Trakt provenance and immutable provider-event identit
 
 ## Roadmap (next runs)
 
-- Curated collection achievements ("Best Picture winners", editorial lists) with an admin-managed list table
-- Seasonal leagues and season-scoped score projections
-- Weekly/monthly/seasonal leaderboards and challenges
-- Competition-first dashboard and private league invitations
-- Backdated logging (pick the watch date) and CSV/Letterboxd import
-- Freemium gates: advanced stats, custom lists, profile themes
+- Complete Phase 3 social lifecycle: shareable friend invites, outgoing requests, cancel/remove/block, and privacy-filtered activity.
+- Build the competition-first dashboard around current rank, pass distance, active challenge, season end, and league activity.
+- Phase 4: shared API schemas/docs, provider resilience/cache controls, frontend/Playwright accessibility coverage, and a documentation truth pass.
+- Later: CSV/Letterboxd import, curated editorial achievements, advanced statistics, custom lists, and profile themes.
 
 ## Attribution
 

@@ -47,7 +47,7 @@ export function detectDuplicateCandidate(userId, candidateWatchId, { personIds =
   if (!candidate) return null;
   const fingerprint = duplicateFingerprint(candidate.tmdb_id, candidate.watched_day_local);
   if (db.prepare("SELECT 1 FROM duplicate_ignore_rules WHERE user_id=? AND fingerprint=?").get(uid, fingerprint)) return null;
-  if (db.prepare("SELECT 1 FROM duplicate_cases WHERE user_id=? AND candidate_watch_id=?").get(uid, candidateId)) return null;
+  if (db.prepare("SELECT 1 FROM duplicate_cases WHERE user_id=? AND candidate_watch_id=? AND cancelled_at IS NULL").get(uid, candidateId)) return null;
   const canonical = closestManual(uid, candidate);
   if (!canonical) return null;
   const info = db.prepare(`INSERT INTO duplicate_cases
@@ -86,6 +86,44 @@ export function reconcilePendingDuplicatesAfterWatchDeletion(userId, watchId, no
   }
   return [...affected];
 }
+export function reconcileDuplicateStateForMovie(userId, tmdbId, now = new Date().toISOString()) {
+  const uid = positiveId(userId, "userId");
+  const movieId = positiveId(tmdbId, "tmdbId");
+  const cases = db.prepare(`SELECT d.*,p.tmdb_id,p.watched_day_local,p.deleted_at candidate_deleted_at,
+      p.deleted_reason candidate_deleted_reason,p.logical_canonical_watch_id candidate_logical_canonical_watch_id,
+      c.tmdb_id canonical_tmdb_id,c.watched_day_local canonical_day,c.deleted_at canonical_deleted_at
+    FROM duplicate_cases d JOIN watches p ON p.id=d.candidate_watch_id JOIN watches c ON c.id=d.canonical_watch_id
+    WHERE d.user_id=? AND (p.tmdb_id=? OR c.tmdb_id=?) AND d.cancelled_at IS NULL ORDER BY d.id`).all(uid, movieId, movieId);
+  for (const row of cases) {
+    if (row.status === "pending") {
+      cancelOrReassignPendingCase(uid, row, "diary_date_no_matching_manual", now);
+      continue;
+    }
+    const preservedMergedProof = row.status === "resolved" && row.resolution === "merge"
+      && row.candidate_deleted_at != null && row.candidate_deleted_reason === "duplicate_merged"
+      && row.candidate_logical_canonical_watch_id === row.canonical_watch_id
+      && row.canonical_deleted_at == null;
+    const stillMatches = row.candidate_deleted_at == null && row.canonical_deleted_at == null
+      && row.tmdb_id === row.canonical_tmdb_id && row.watched_day_local === row.canonical_day;
+    if (preservedMergedProof || stillMatches) continue;
+    db.prepare("UPDATE duplicate_cases SET cancelled_at=?,cancellation_reason=? WHERE id=? AND user_id=? AND cancelled_at IS NULL")
+      .run(now, "diary_date_chronology_changed", row.id, uid);
+    if (row.resolution === "ignore_future_matching"
+        && !db.prepare(`SELECT 1 FROM duplicate_cases WHERE user_id=? AND fingerprint=?
+          AND resolution='ignore_future_matching' AND cancelled_at IS NULL`).get(uid, row.fingerprint)) {
+      db.prepare("DELETE FROM duplicate_ignore_rules WHERE user_id=? AND fingerprint=?").run(uid, row.fingerprint);
+    }
+  }
+  const candidates = db.prepare(`SELECT id FROM watches WHERE user_id=? AND tmdb_id=? AND deleted_at IS NULL
+    AND source<>'manual' AND provider_event_id IS NOT NULL ORDER BY watched_at_utc,id`).all(uid, movieId);
+  const created = [];
+  for (const candidate of candidates) {
+    const caseId = detectDuplicateCandidate(uid, candidate.id);
+    if (caseId) created.push(caseId);
+  }
+  return created;
+}
+
 export function rebaseDuplicateStateForTimezone(userId, now = new Date().toISOString()) {
   const uid = positiveId(userId, "userId");
   const rows = db.prepare(`SELECT d.*,w.tmdb_id,w.watched_day_local,w.deleted_at candidate_deleted_at

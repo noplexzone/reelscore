@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 13 } = {}) {
+export function initializeDatabase({ targetVersion = 14 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1526,12 +1526,120 @@ function migration13() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (13)").run();
 }
 
+// Owner-controlled diary annotations and same-owner append-only audit.
+function migration14() {
+  // Schema 7 allowed only one lifetime case per provider event. Diary date edits
+  // can create distinct review episodes, so preserve history and constrain only
+  // the single currently active episode. Preserve triggers on other tables that
+  // query duplicate_cases while rebuilding the table.
+  const dependentDuplicateTriggers = db.prepare(`SELECT name,sql FROM sqlite_master
+    WHERE type='trigger' AND tbl_name<>'duplicate_cases' AND sql LIKE '%duplicate_cases%'`).all();
+  for (const trigger of dependentDuplicateTriggers) {
+    const quoted = `"${trigger.name.replaceAll('"', '""')}"`;
+    db.exec(`DROP TRIGGER ${quoted}`);
+  }
+  db.exec(`
+    CREATE TABLE duplicate_cases_v14 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      canonical_watch_id INTEGER NOT NULL REFERENCES watches(id) ON DELETE RESTRICT,
+      candidate_watch_id INTEGER NOT NULL REFERENCES watches(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved')),
+      resolution TEXT CHECK(resolution IN ('merge','keep_both','keep_separate','ignore_future_matching')),
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT,
+      cancelled_at TEXT,
+      cancellation_reason TEXT,
+      CHECK(canonical_watch_id <> candidate_watch_id),
+      CHECK((status='pending' AND resolution IS NULL AND resolved_at IS NULL) OR
+            (status='resolved' AND resolution IS NOT NULL AND resolved_at IS NOT NULL))
+    );
+    INSERT INTO duplicate_cases_v14
+      (id,user_id,fingerprint,canonical_watch_id,candidate_watch_id,status,resolution,evidence_json,created_at,resolved_at,cancelled_at,cancellation_reason)
+      SELECT id,user_id,fingerprint,canonical_watch_id,candidate_watch_id,status,resolution,evidence_json,created_at,resolved_at,cancelled_at,cancellation_reason
+      FROM duplicate_cases;
+    DROP TABLE duplicate_cases;
+    ALTER TABLE duplicate_cases_v14 RENAME TO duplicate_cases;
+    CREATE INDEX idx_duplicate_cases_user_status ON duplicate_cases(user_id,status,created_at,id);
+    CREATE INDEX idx_duplicate_cases_fingerprint ON duplicate_cases(user_id,fingerprint,status,id);
+    CREATE UNIQUE INDEX idx_duplicate_cases_active_candidate ON duplicate_cases(candidate_watch_id) WHERE cancelled_at IS NULL;
+    CREATE TRIGGER trg_duplicate_cases_owner_insert
+      BEFORE INSERT ON duplicate_cases
+      WHEN NOT EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.canonical_watch_id AND w.user_id=NEW.user_id)
+        OR NOT EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.candidate_watch_id AND w.user_id=NEW.user_id)
+      BEGIN SELECT RAISE(ABORT,'duplicate case owner mismatch'); END;
+    CREATE TRIGGER trg_duplicate_cases_owner_update
+      BEFORE UPDATE OF user_id,canonical_watch_id,candidate_watch_id ON duplicate_cases
+      WHEN NOT EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.canonical_watch_id AND w.user_id=NEW.user_id)
+        OR NOT EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.candidate_watch_id AND w.user_id=NEW.user_id)
+      BEGIN SELECT RAISE(ABORT,'duplicate case owner mismatch'); END;
+  `);
+  for (const trigger of dependentDuplicateTriggers) db.exec(trigger.sql);
+
+  const columns = [
+    ["personal_rating", "BLOB CHECK(personal_rating IS NULL OR (typeof(personal_rating)='integer' AND personal_rating BETWEEN 0 AND 100))"],
+    ["review", "TEXT CHECK(review IS NULL OR length(review)<=5000)"], ["private_notes", "TEXT CHECK(private_notes IS NULL OR length(private_notes)<=10000)"],
+    ["favorite", "INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN (0,1))"],
+    ["tags_json", "TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags_json) AND json_type(tags_json)='array' AND length(tags_json)<=2000)"],
+    ["venue", "TEXT CHECK(venue IS NULL OR length(venue)<=200)"], ["visibility", "TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private','friends','public'))"],
+  ];
+  for (const [name, definition] of columns) if (!columnExists("watches", name)) db.exec(`ALTER TABLE watches ADD COLUMN ${name} ${definition}`);
+  db.exec(`CREATE TABLE IF NOT EXISTS watch_annotation_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      watch_id INTEGER NOT NULL REFERENCES watches(id) ON DELETE RESTRICT,
+      changed_fields_json TEXT NOT NULL CHECK(json_valid(changed_fields_json) AND json_type(changed_fields_json)='array'),
+      before_json TEXT NOT NULL CHECK(json_valid(before_json) AND json_type(before_json)='object'),
+      after_json TEXT NOT NULL CHECK(json_valid(after_json) AND json_type(after_json)='object'),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+    CREATE INDEX IF NOT EXISTS idx_watch_annotation_audit_watch ON watch_annotation_audit(user_id,watch_id,id);
+    CREATE TRIGGER IF NOT EXISTS trg_watch_annotation_audit_owner_insert BEFORE INSERT ON watch_annotation_audit
+      WHEN NOT EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.watch_id AND w.user_id=NEW.user_id)
+      BEGIN SELECT RAISE(ABORT,'watch annotation audit owner mismatch'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watch_annotation_audit_same_id_insert BEFORE INSERT ON watch_annotation_audit
+      WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM watch_annotation_audit a WHERE a.id=NEW.id)
+      BEGIN SELECT RAISE(ABORT,'watch annotation audit is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watch_annotation_audit_update BEFORE UPDATE ON watch_annotation_audit
+      BEGIN SELECT RAISE(ABORT,'watch annotation audit is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watch_annotation_audit_delete BEFORE DELETE ON watch_annotation_audit
+      BEGIN SELECT RAISE(ABORT,'watch annotation audit is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watches_diary_owner_update BEFORE UPDATE OF user_id ON watches
+      WHEN EXISTS (SELECT 1 FROM watch_annotation_audit a WHERE a.watch_id=OLD.id AND a.user_id<>NEW.user_id)
+      BEGIN SELECT RAISE(ABORT,'watch owner has dependent diary audit records'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watches_diary_rating_insert BEFORE INSERT ON watches
+      WHEN NEW.personal_rating IS NOT NULL AND (typeof(NEW.personal_rating)<>'integer' OR NEW.personal_rating NOT BETWEEN 0 AND 100)
+      BEGIN SELECT RAISE(ABORT,'personal_rating must be an integer from 0 to 100'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watches_diary_rating_update BEFORE UPDATE OF personal_rating ON watches
+      WHEN NEW.personal_rating IS NOT NULL AND (typeof(NEW.personal_rating)<>'integer' OR NEW.personal_rating NOT BETWEEN 0 AND 100)
+      BEGIN SELECT RAISE(ABORT,'personal_rating must be an integer from 0 to 100'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watches_diary_tags_insert BEFORE INSERT ON watches
+      WHEN NOT (json_valid(NEW.tags_json) AND json_type(NEW.tags_json)='array')
+        OR (json_valid(NEW.tags_json) AND json_type(NEW.tags_json)='array' AND (
+          json_array_length(NEW.tags_json)>20
+          OR EXISTS (SELECT 1 FROM json_each(NEW.tags_json) j WHERE j.type<>'text' OR length(j.value) NOT BETWEEN 1 AND 30
+            OR j.value<>trim(j.value) OR j.value<>lower(j.value) OR substr(j.value,1,1) NOT GLOB '[a-z0-9]'
+            OR j.value GLOB '*[^a-z0-9 _-]*')
+          OR EXISTS (SELECT 1 FROM json_each(NEW.tags_json) a JOIN json_each(NEW.tags_json) b ON a.key<b.key WHERE a.value>=b.value)))
+      BEGIN SELECT RAISE(ABORT,'tags_json must contain canonical tags'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_watches_diary_tags_update BEFORE UPDATE OF tags_json ON watches
+      WHEN NOT (json_valid(NEW.tags_json) AND json_type(NEW.tags_json)='array')
+        OR (json_valid(NEW.tags_json) AND json_type(NEW.tags_json)='array' AND (
+          json_array_length(NEW.tags_json)>20
+          OR EXISTS (SELECT 1 FROM json_each(NEW.tags_json) j WHERE j.type<>'text' OR length(j.value) NOT BETWEEN 1 AND 30
+            OR j.value<>trim(j.value) OR j.value<>lower(j.value) OR substr(j.value,1,1) NOT GLOB '[a-z0-9]'
+            OR j.value GLOB '*[^a-z0-9 _-]*')
+          OR EXISTS (SELECT 1 FROM json_each(NEW.tags_json) a JOIN json_each(NEW.tags_json) b ON a.key<b.key WHERE a.value>=b.value)))
+      BEGIN SELECT RAISE(ABORT,'tags_json must contain canonical tags'); END;`);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (14)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 13 } = {}) {
-  const latestVersion = 13;
+export function runMigrations({ skipBackup = false, targetVersion = 14 } = {}) {
+  const latestVersion = 14;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1612,6 +1720,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 13 } = {}) {
   }
   if (targetVersion >= 13 && !applied.has(13)) {
     db.transaction(migration13)();
+  }
+  if (targetVersion >= 14 && !applied.has(14)) {
+    db.transaction(migration14)();
   }
 
   if (process.env.APP_MODE === "hosted") {
