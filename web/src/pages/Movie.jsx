@@ -3,6 +3,41 @@ import { useParams, Link } from "wouter";
 import { api, posterUrl } from "../api.js";
 import { useToast } from "../App.jsx";
 import QuickLog from "../components/QuickLog.jsx";
+import { canonicalUtcInstant } from "../utils/utc.js";
+
+
+function DiaryEditor({ watch, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [dateError, setDateError] = useState("");
+  async function edit() { setOpen(true); setMessage(""); setDateError(""); try { const entry=await api(`/watches/${watch.id}/diary`); setDraft({...entry,tags:(entry.tags||[]).join(", ")}); } catch(error){ setMessage(error.message); } }
+  async function save(event) {
+    event.preventDefault(); setSaving(true); setMessage(""); setDateError("");
+    try {
+      const watchedAt = canonicalUtcInstant(draft.watched_at_utc);
+      if (!watchedAt) { setDateError("Enter an exact valid UTC instant such as 2035-01-10T12:00:00.000Z."); return; }
+      const saved=await api(`/watches/${watch.id}/diary`,{method:"PATCH",body:{personal_rating:draft.personal_rating===""?null:Number(draft.personal_rating),review:draft.review||null,private_notes:draft.private_notes||null,favorite:!!draft.favorite,tags:draft.tags.split(",").map(tag=>tag.trim()).filter(Boolean),venue:draft.venue||null,visibility:draft.visibility,watched_at_utc:watchedAt}});
+      setDraft({...saved,tags:saved.tags.join(", ")}); setMessage("Saved"); onSaved();
+    } catch(error){ setMessage(error.message); } finally { setSaving(false); }
+  }
+  if (!open) return <button className="btn ghost small" onClick={edit}>Edit diary</button>;
+  if (!draft) return <div className="diary-editor" role="status">{message||"Loading diary…"}</div>;
+  return <form className="diary-editor" onSubmit={save}>
+    <div className="diary-heading"><strong>Diary entry</strong><button type="button" className="btn ghost small" onClick={()=>setOpen(false)}>Close</button></div>
+    <label>Watched instant (UTC)<input inputMode="text" pattern="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z" value={draft.watched_at_utc} aria-invalid={dateError?"true":undefined} aria-describedby={dateError?`diary-date-error-${watch.id}`:undefined} onChange={e=>{setDraft({...draft,watched_at_utc:e.target.value});setDateError("");}}/></label>
+    {dateError && <span id={`diary-date-error-${watch.id}`} className="error" role="alert">{dateError}</span>}
+    <label>Rating (0–100)<input type="number" min="0" max="100" value={draft.personal_rating??""} onChange={e=>setDraft({...draft,personal_rating:e.target.value})}/></label>
+    <label>Review<textarea maxLength="5000" value={draft.review||""} onChange={e=>setDraft({...draft,review:e.target.value})}/></label>
+    <label>Private notes<textarea maxLength="10000" value={draft.private_notes||""} onChange={e=>setDraft({...draft,private_notes:e.target.value})}/></label>
+    <label>Tags <span className="muted">comma-separated</span><input value={draft.tags} onChange={e=>setDraft({...draft,tags:e.target.value})}/></label>
+    <label>Venue<input maxLength="200" value={draft.venue||""} onChange={e=>setDraft({...draft,venue:e.target.value})}/></label>
+    <label>Visibility<select value={draft.visibility} onChange={e=>setDraft({...draft,visibility:e.target.value})}><option value="private">Private</option><option value="friends">Friends</option><option value="public">Public</option></select></label>
+    <label className="diary-check"><input type="checkbox" checked={!!draft.favorite} onChange={e=>setDraft({...draft,favorite:e.target.checked})}/> Favorite</label>
+    <div className="diary-actions"><button className="btn" disabled={saving}>{saving?"Saving…":"Save diary"}</button><span className={message==="Saved"?"notice":"error"} role="status">{message}</span></div>
+  </form>;
+}
 
 export default function Movie() {
   const { id } = useParams();
@@ -107,13 +142,14 @@ export default function Movie() {
                 Watched {m.my_watches.length}× — history:
               </p>
               {m.my_watches.map((w) => (
-                <div key={w.id} className="row" style={{ gap: 8, marginBottom: 4 }}>
+                <div key={w.id} className="diary-watch-row">
                   <span className="muted">
                     {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
                   </span>
                   {w.source && w.source !== "manual" && (
                     <span className={`verified ${w.source}`}>✓ {w.source}</span>
                   )}
+                  <DiaryEditor watch={w} onSaved={load} />
                   <button
                     className="btn ghost small"
                     onClick={() => deleteWatch(w.id)}

@@ -96,7 +96,8 @@ function reconcileOneMovie(userId, tmdbId) {
     const preservingLegacy = desired && active.length === 1 && active[0].rule_version === "legacy-v1"
       && !eligibilityChanged;
     const matchingRuntime = desired && active.length === 1 && active[0].rule_version === ELIGIBILITY_RULE_VERSION
-      && active[0].category === desired.category && active[0].points === desired.points;
+      && active[0].category === desired.category && active[0].points === desired.points
+      && active[0].effective_at === watch.watched_at_utc;
     const matching = preservingLegacy || matchingRuntime;
     if (!matching && active.length) {
       reverseScoreEvents({ userId, eventIds: active.map((event) => event.id), reason: desired ? "watch_eligibility_changed" : (watch.deleted_reason || decision.eligibility_reason) });

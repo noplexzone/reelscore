@@ -16,6 +16,7 @@ import { scoreBreakdown, totalScore } from "../repositories/score-ledger.js";
 import { logManualWatchAndReconcile } from "../services/manual-watch-service.js";
 import { currentStreak } from "../services/streak-service.js";
 import { updateUserSettings } from "../services/user-settings-service.js";
+import { getDiaryEntry, updateDiaryEntry } from "../services/diary-service.js";
 import { duplicates } from "./duplicates.js";
 import { leagues } from "./leagues.js";
 
@@ -177,7 +178,7 @@ api.get("/movie/:id", async (req, res, next) => {
     const m = await movieDetails(tmdbId);
     const watched = db
       .prepare(
-        "SELECT id, watched_at, points, source FROM watches WHERE user_id = ? AND tmdb_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC"
+        "SELECT id, watched_at, watched_at_utc, watched_day_local, points, source, personal_rating, review, favorite, tags_json, venue, visibility FROM watches WHERE user_id = ? AND tmdb_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC"
       )
       .all(req.user.id, m.id);
     res.json({
@@ -338,6 +339,15 @@ api.get("/watches", (req, res) => {
     )
     .all(req.user.id);
   res.json({ watches: rows });
+});
+
+api.get("/watches/:id/diary", (req, res, next) => {
+  const watchId=parsePositiveInt(req.params.id); if(!watchId) return res.status(400).json({error:"Invalid watch ID."});
+  try { res.json(getDiaryEntry(req.user.id,watchId)); } catch(error){ next(error); }
+});
+api.patch("/watches/:id/diary", async (req, res, next) => {
+  const watchId=parsePositiveInt(req.params.id); if(!watchId) return res.status(400).json({error:"Invalid watch ID."});
+  try { res.json(await updateDiaryEntry(req.user.id,watchId,req.body)); } catch(error){ next(error); }
 });
 
 api.delete("/watches/:id", async (req, res, next) => {
