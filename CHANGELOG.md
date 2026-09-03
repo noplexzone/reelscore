@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added append-only season score projection reconciliation with database-enforced source copying, reversal shape, archived-league freezing, immutable provider evidence, and atomic reconciliation across competitive watch, duplicate, settings, deletion, import, and membership-departure ingress.
 
 ### Added
+- Accessible Account Settings workflow for uploading official Letterboxd diary/watched exports, reviewing paged match and validation results, resolving every ambiguous row, recovering exact-export previews after reload, and restoring idempotent completion counts without exposing commit tokens or private notes. Movie history now distinguishes watched-only imports as `Marked watched` and labels all Letterboxd rows as non-competitive.
 - Strict owner-isolated Letterboxd CSV preview and atomic commit APIs with bounded TMDB resolution, explicit ambiguity handling, row-level validation results, replay-safe tokens, and diary-first placeholder reconciliation.
 - Schema 15 adds owner-scoped Letterboxd import jobs, immutable private import provenance, and database/repository/ledger barriers that keep imported history outside competitive scoring.
 - Audited owner-only diary entries with 0–100 personal ratings, reviews, private notes, favorites, normalized tags, venue, visibility, transactional manual watch-date reconciliation with ended/frozen seasons protected and provider-attested dates held read-only, and a secondary accessible Movie-page editor that leaves Quick Log unchanged.

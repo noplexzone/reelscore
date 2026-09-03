@@ -45,6 +45,22 @@ before(async () => {
   assert.equal(registered.status, 200, await registered.text());
   const cookies = parseCookies(registered);
   appOrigin = { cookie: Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ") };
+  const [{ db }, { insertWatch }] = await Promise.all([
+    import("../src/db.js"),
+    import("../src/repositories/watch-repository.js"),
+  ]);
+  const owner = db.prepare("SELECT id FROM users WHERE username=?").get("movie_route");
+  insertWatch({
+    userId: owner.id,
+    movie: { id: 603, title: "The Matrix", release_date: "1999-03-30", genres: [] },
+    source: "letterboxd",
+    watchedAt: "2026-08-01T12:00:00.000Z",
+    competitionEligibility: "unverified_import",
+    sourceRecordedDate: "2026-08-01",
+    sourceDateKind: "marked_watched_day",
+    importSource: "letterboxd",
+    importEventKey: "movie-http-marked-watched",
+  });
 });
 
 after(async () => {
@@ -59,4 +75,6 @@ test("authenticated movie detail renders curated people instead of failing at ru
   const body = JSON.parse(text);
   assert.equal(body.title, "The Matrix");
   assert.deepEqual(body.notable_people, [{ id: 6384, name: "Keanu Reeves", role: "actor" }]);
+  assert.equal(body.my_watches[0].source_date_kind, "marked_watched_day");
+  assert.equal(body.my_watches[0].source_recorded_date, "2026-08-01");
 });

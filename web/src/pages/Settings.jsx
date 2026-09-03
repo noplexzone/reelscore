@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api, hydrateSession } from "../api.js";
+import LetterboxdImport from "../components/LetterboxdImport.jsx";
 
 function displayDate(value) {
   if (!value) return "Unknown";
@@ -206,6 +207,8 @@ export default function Settings() {
         </div>
       </form>
     </section>
+
+    <LetterboxdImport />
 
     <section className="card settings-card">
       <div className="settings-card-heading">

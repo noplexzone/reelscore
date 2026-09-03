@@ -1785,8 +1785,11 @@ function migration15() {
     ON letterboxd_import_jobs
     WHEN NEW.user_id IS NOT OLD.user_id OR NEW.public_job_id IS NOT OLD.public_job_id
       OR NEW.file_digest IS NOT OLD.file_digest OR NEW.diary_file_sha256 IS NOT OLD.diary_file_sha256
-      OR NEW.watched_file_sha256 IS NOT OLD.watched_file_sha256
-      OR NEW.commit_token_hash IS NOT OLD.commit_token_hash OR NEW.row_count IS NOT OLD.row_count
+      OR NEW.watched_file_sha256 IS NOT OLD.watched_file_sha256 OR NEW.row_count IS NOT OLD.row_count
+      OR (NEW.commit_token_hash IS NOT OLD.commit_token_hash AND NOT (
+        OLD.state='preview' AND NEW.state='preview'
+        AND OLD.commit_token_consumed_at IS NULL AND NEW.commit_token_consumed_at IS NULL
+      ))
     BEGIN SELECT RAISE(ABORT,'import job identity is immutable'); END;
 
     CREATE TRIGGER IF NOT EXISTS trg_letterboxd_import_jobs_token_reuse

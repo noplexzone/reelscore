@@ -82,7 +82,6 @@ test("concurrent identical commits converge on one immutable result",async()=>{
  const [a,b]=await Promise.all([commitLetterboxdImport(uid,preview.job_id,input,deps),commitLetterboxdImport(uid,preview.job_id,input,deps)]);assert.deepEqual(a,b);assert.equal(db.prepare("SELECT COUNT(*) c FROM watches WHERE user_id=? AND import_event_key=?").get(uid,preview.rows[0].import_event_key).c,1);
 });
 
-
 test("preview persists bounded invalid rows while valid rows remain committable",async()=>{
  const csv=`${wh}\n2026-02-30,Bad Date,2024,https://letterboxd.com/film/bad-date/\n2026-09-01,Valid Row,2024,https://letterboxd.com/film/valid-row/\n`;
  const preview=await previewLetterboxdImport(uid,[file("watched.csv",csv)],{db,searchMovies:async(q)=>({results:[movie(71,q,2024)]})});
@@ -111,11 +110,47 @@ test("a later diary bundle retires an earlier watched-only placeholder",async()=
  assert.ok(retired.deleted_at); assert.equal(retired.deleted_reason,"letterboxd_diary_reconciled");
 });
 
-
 test("combined row limits count invalid source rows before the bounded error cap",async()=>{
  const rows=(prefix,count)=>Array.from({length:count},(_,i)=>`2026-02-30,${prefix}${i},2024,https://letterboxd.com/film/${prefix.toLowerCase()}-${i}/`).join("\n");
  const files=[file("diary.csv",`${dh}\n${Array.from({length:5001},(_,i)=>`2026-02-30,D${i},2024,https://letterboxd.com/film/d-${i}/,,,,2026-02-30`).join("\n")}\n`),file("watched.csv",`${wh}\n${rows("W",5000)}\n`)];
  await assert.rejects(previewLetterboxdImport(uid,files,{db,searchMovies:async()=>{throw new Error("must not search")}}),e=>e.status===413&&/10,000/.test(e.message));
  const tooManyInvalid=file("watched.csv",`${wh}\n${rows("I",101)}\n`);
  await assert.rejects(previewLetterboxdImport(uid,[tooManyInvalid],{db,searchMovies:async()=>{throw new Error("must not search")}}),e=>e.status===400&&e.rowErrors?.length===100&&/more than 100/i.test(e.message));
+});
+
+test("re-uploading an exact preview rotates its token instead of stranding the export",async()=>{
+ const csv=`${wh}\n2026-09-01,Reloadable,2024,https://letterboxd.com/film/reloadable/\n`;
+ const deps={db,searchMovies:async()=>({results:[movie(91,"Reloadable",2024)]}),now:()=>new Date("2026-09-03T12:00:00Z")};
+ const first=await previewLetterboxdImport(uid,[file("watched.csv",csv)],deps);
+ const second=await previewLetterboxdImport(uid,[file("watched.csv",csv)],deps);
+ assert.equal(second.job_id,first.job_id); assert.notEqual(second.commit_token,first.commit_token);
+ await assert.rejects(commitLetterboxdImport(uid,first.job_id,{token:first.commit_token,decisions:[]},{db,movieDetails:async()=>movie(91,"Reloadable",2024)}),e=>e.status===409);
+ const result=await commitLetterboxdImport(uid,second.job_id,{token:second.commit_token,decisions:[]},{db,movieDetails:async()=>movie(91,"Reloadable",2024)});
+ assert.equal(result.counts.imported,1);
+ const replayPreview=await previewLetterboxdImport(uid,[file("watched.csv",csv)],deps);
+ assert.equal(replayPreview.job_id,first.job_id); assert.equal(replayPreview.state,"completed"); assert.equal(replayPreview.commit_token,undefined);
+});
+
+test("concurrent identical previews converge on one recoverable job",async()=>{
+ const csv=`${wh}\n2026-09-01,Preview Race,2024,https://letterboxd.com/film/preview-race/\n`;
+ let arrived=0,release;const gate=new Promise(resolve=>{release=resolve;});
+ const searchMovies=async()=>{arrived++;if(arrived===2)release();await gate;return {results:[movie(92,"Preview Race",2024)]};};
+ const deps={db,searchMovies,now:()=>new Date("2026-09-03T12:00:00Z")};
+ const [first,second]=await Promise.all([previewLetterboxdImport(uid,[file("watched.csv",csv)],deps),previewLetterboxdImport(uid,[file("watched.csv",csv)],deps)]);
+ assert.equal(first.job_id,second.job_id); assert.notEqual(first.commit_token,second.commit_token);
+ await assert.rejects(commitLetterboxdImport(uid,first.job_id,{token:first.commit_token,decisions:[]},{db,movieDetails:async()=>movie(92,"Preview Race",2024)}),e=>e.status===409);
+ const result=await commitLetterboxdImport(uid,second.job_id,{token:second.commit_token,decisions:[]},{db,movieDetails:async()=>movie(92,"Preview Race",2024)});
+ assert.equal(result.counts.imported,1);
+ assert.equal(db.prepare("SELECT COUNT(*) c FROM letterboxd_import_jobs WHERE user_id=? AND file_digest=(SELECT file_digest FROM letterboxd_import_jobs WHERE public_job_id=?)").get(uid,first.job_id).c,1);
+});
+
+test("preview retains an auto-selected exact match outside the first candidate page",async()=>{
+ const exact=movie(912,"Deep Exact",2024);
+ const results=Array.from({length:11},(_,index)=>movie(800+index,`Noise ${index}`,2024)).concat(exact);
+ const searchMovies=async()=>({page:1,total_pages:1,results});
+ const preview=await previewLetterboxdImport(uid,[file("watched.csv",`${wh}\n2026-09-03,Deep Exact,2024,https://letterboxd.com/film/deep-exact/\n`)],{db,searchMovies});
+ assert.equal(preview.rows[0].resolution_state,"auto_selected");
+ assert.equal(preview.rows[0].selected_tmdb_id,exact.id);
+ assert.equal(preview.rows[0].candidates.length,10);
+ assert.ok(preview.rows[0].candidates.some(candidate=>candidate.id===exact.id));
 });

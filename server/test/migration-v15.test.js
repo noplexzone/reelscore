@@ -191,12 +191,14 @@ test("import row links cannot cross owners or disagree with the selected movie",
     ["UPDATE letterboxd_import_jobs SET public_job_id=? WHERE id=?", "public-job-links-02"],
     ["UPDATE letterboxd_import_jobs SET file_digest=? WHERE id=?", "4".repeat(64)],
     ["UPDATE letterboxd_import_jobs SET diary_file_sha256=? WHERE id=?", "5".repeat(64)],
-    ["UPDATE letterboxd_import_jobs SET commit_token_hash=? WHERE id=?", "6".repeat(64)],
     ["UPDATE letterboxd_import_jobs SET row_count=? WHERE id=?", 4],
   ];
   for (const [sql, value] of immutableJobUpdates) {
     assert.throws(() => db.prepare(sql).run(value, jobId), /import job identity is immutable/i);
   }
+  db.prepare("UPDATE letterboxd_import_jobs SET commit_token_hash=? WHERE id=? AND state='preview'").run("6".repeat(64), jobId);
+  db.prepare("UPDATE letterboxd_import_jobs SET state='committing' WHERE id=?").run(jobId);
+  assert.throws(() => db.prepare("UPDATE letterboxd_import_jobs SET commit_token_hash=? WHERE id=?").run("7".repeat(64), jobId), /import job identity is immutable/i);
   assert.throws(() => db.prepare("UPDATE letterboxd_import_rows SET watch_id=? WHERE import_event_key='diary:valid-link'")
     .run(otherWatch.id), /owner|movie/i);
   assert.throws(() => db.prepare("UPDATE letterboxd_import_rows SET selected_tmdb_id=? WHERE import_event_key='diary:valid-link'")
