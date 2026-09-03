@@ -1,6 +1,7 @@
 // Achievement catalog and compatibility facade. Eligibility, revocation, and
 // ledger writes live in services/achievement-service.js.
 import { achievementProgress, reconcileAchievements } from "./services/achievement-service.js";
+export { CURATED_LISTS, curatedList } from "./curated-lists.js";
 
 export const VOLUME_TIERS = [
   { n: 1, points: 25, name: "Opening Night", desc: "Log your first film" },
