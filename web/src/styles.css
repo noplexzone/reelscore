@@ -420,5 +420,7 @@ select:focus { outline: 2px solid var(--gold); outline-offset: 1px; border-color
 .diary-check input { width:20px; height:20px; }
 @media (max-width:560px) { .diary-editor { padding:14px; } .diary-actions { align-items:stretch; flex-direction:column; } .diary-actions .btn { min-height:48px; } }
 
-.diary-watch-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
-.diary-watch-row .diary-editor { flex-basis:100%; }
+.diary-watch-row { display:grid; gap:8px; margin-bottom:12px; }
+.diary-watch-summary { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.diary-watch-summary .btn { margin-left:auto; }
+.diary-watch-row .diary-editor { width:100%; }

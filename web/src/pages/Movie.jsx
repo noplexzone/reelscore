@@ -143,20 +143,22 @@ export default function Movie() {
               </p>
               {m.my_watches.map((w) => (
                 <div key={w.id} className="diary-watch-row">
-                  <span className="muted">
-                    {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
-                  </span>
-                  {w.source && w.source !== "manual" && (
-                    <span className={`verified ${w.source}`}>✓ {w.source}</span>
-                  )}
+                  <div className="diary-watch-summary">
+                    <span className="muted">
+                      {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
+                    </span>
+                    {w.source && w.source !== "manual" && (
+                      <span className={`verified ${w.source}`}>✓ {w.source}</span>
+                    )}
+                    <button
+                      className="btn ghost small"
+                      onClick={() => deleteWatch(w.id)}
+                      title="Remove this watch entry"
+                    >
+                      Remove
+                    </button>
+                  </div>
                   <DiaryEditor watch={w} onSaved={load} />
-                  <button
-                    className="btn ghost small"
-                    onClick={() => deleteWatch(w.id)}
-                    title="Remove this watch entry"
-                  >
-                    Remove
-                  </button>
                 </div>
               ))}
             </div>
