@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added append-only season score projection reconciliation with database-enforced source copying, reversal shape, archived-league freezing, immutable provider evidence, and atomic reconciliation across competitive watch, duplicate, settings, deletion, import, and membership-departure ingress.
 
 ### Added
+- Versioned ReelScore Starter Canon achievement: authenticated Lists summary/detail routes, a poster-first 25-film progress experience, and one reversible 875-point completion trophy derived only from distinct active achievement-eligible watches. The fixed `starter-canon:v1` catalog requires a new version for future membership changes.
 - Accessible Account Settings workflow for uploading official Letterboxd diary/watched exports, reviewing paged match and validation results, resolving every ambiguous row, recovering exact-export previews after reload, and restoring idempotent completion counts without exposing commit tokens or private notes. Movie history now distinguishes watched-only imports as `Marked watched` and labels all Letterboxd rows as non-competitive.
 - Strict owner-isolated Letterboxd CSV preview and atomic commit APIs with bounded TMDB resolution, explicit ambiguity handling, row-level validation results, replay-safe tokens, and diary-first placeholder reconciliation.
 - Schema 15 adds owner-scoped Letterboxd import jobs, immutable private import provenance, and database/repository/ledger barriers that keep imported history outside competitive scoring.
