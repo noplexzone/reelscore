@@ -7,7 +7,7 @@ import {
 } from "../tmdb.js";
 import { basePoints } from "../scoring.js";
 import { progress, VOLUME_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
-import { CURATED_PEOPLE, curatedPerson, filterFilmography, personBonus } from "../people.js";
+import { CURATED_PEOPLE, curatedPerson, filterFilmography, notablePeopleInMovie, personBonus } from "../people.js";
 import { connections } from "./connections.js";
 import { parsePositiveInt } from "../validation.js";
 import { reconcileMovieEligibility } from "../services/scoring-service.js";
