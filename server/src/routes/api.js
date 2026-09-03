@@ -19,6 +19,7 @@ import { updateUserSettings } from "../services/user-settings-service.js";
 import { getDiaryEntry, updateDiaryEntry } from "../services/diary-service.js";
 import { duplicates } from "./duplicates.js";
 import { leagues } from "./leagues.js";
+import { imports } from "./imports.js";
 
 export const api = Router();
 
@@ -33,6 +34,7 @@ api.use((req, res, next) => {
 api.use("/connections", connections);
 api.use("/duplicates", duplicates);
 api.use("/leagues", leagues);
+api.use("/imports", imports);
 
 function userSummary(u, { includeTimezone = false } = {}) {
   const summary = {
@@ -178,7 +180,7 @@ api.get("/movie/:id", async (req, res, next) => {
     const m = await movieDetails(tmdbId);
     const watched = db
       .prepare(
-        "SELECT id, watched_at, watched_at_utc, watched_day_local, points, source, personal_rating, review, favorite, tags_json, venue, visibility FROM watches WHERE user_id = ? AND tmdb_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC"
+        "SELECT id, watched_at, watched_at_utc, watched_day_local, points, source, source_recorded_date, source_date_kind, personal_rating, review, favorite, tags_json, venue, visibility FROM watches WHERE user_id = ? AND tmdb_id = ? AND deleted_at IS NULL ORDER BY watched_at DESC"
       )
       .all(req.user.id, m.id);
     res.json({

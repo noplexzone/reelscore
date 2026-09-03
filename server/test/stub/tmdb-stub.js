@@ -166,7 +166,8 @@ const server = http.createServer((req, res) => {
 
   if (p === "/search/movie") {
     const q = (url.searchParams.get("query") || "").toLowerCase();
-    const results = Object.values(MOVIES).filter((mv) => mv.title.toLowerCase().includes(q));
+    const year = url.searchParams.get("primary_release_year");
+    const results = Object.values(MOVIES).filter((mv) => mv.title.toLowerCase().includes(q) && (!year || mv.release_date.startsWith(`${year}-`))).map((mv) => ({ ...mv, original_title: mv.title }));
     return json(res, 200, { results });
   }
   if ((m = p.match(/^\/movie\/(\d+)$/))) {

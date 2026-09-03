@@ -10,6 +10,12 @@
 - Date changes are limited to active manual watches without provider-proof dependencies. They require exact `YYYY-MM-DDTHH:mm:ss.sssZ`, derive the local day with the owner timezone, reject direct or indirect effects on ended or frozen seasons, and atomically reconcile duplicate-state episodes, lifetime append-only score corrections, achievements/streak bases, and active season projections. Provider-attested timestamps and provider identity are immutable. External achievement preparation occurs before the write transaction, followed by a second in-transaction frozen-state check.
 - Movie history exposes a secondary accessible editor; Quick Log remains one tap.
 
+## Slice 1b — Private Letterboxd history import (completed)
+
+- Account settings accepts only official `diary.csv` and/or `watched.csv` fields, then presents a paged preview with summary/error counts, ratings, tags, explicit candidate choices, and skip decisions.
+- Commit remains disabled until every ambiguous row has a decision. Completed jobs restore an idempotent result after reload without persisting or rendering the one-use commit token.
+- Imported history is private and competitively excluded. Watched-only rows use honest **Marked watched** labels because the source date records when Letterboxd was marked, not an attested watch instant.
+
 ## Slice 2 — Social lifecycle
 
 1. Migrate friend rows to explicit outgoing/incoming/accepted/blocked lifecycle with append-only actor audit and unique unordered pair identity.

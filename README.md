@@ -55,6 +55,18 @@ case closes with an explicit cancellation reason and scoring is reconciled.
   ([how to find yours](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)).
   Watched movies (with TMDB ids) import with their last-viewed dates.
 
+## Letterboxd import
+
+Account settings accepts the official Letterboxd `diary.csv`, `watched.csv`, or both.
+Previewed rows show automatic matches, ambiguous candidates, invalid-row errors, ratings,
+and tags before anything is written. Every ambiguous row must be matched or explicitly
+skipped. Diary rows use their watched date; watched-only rows are labeled **Marked
+watched** because Letterboxd does not provide an actual watch date for them. Replaying
+a completed import is idempotent.
+
+Imported Letterboxd history is always private, unverified personal history. It earns no
+points, does not move streaks or season standings, and cannot unlock achievements.
+
 ## Social
 
 - Friend requests by username; accepted friends see each other's boards.
@@ -135,7 +147,7 @@ Watches retain manual/Plex/Trakt provenance and immutable provider-event identit
 - Complete Phase 3 social lifecycle: shareable friend invites, outgoing requests, cancel/remove/block, and privacy-filtered activity.
 - Build the competition-first dashboard around current rank, pass distance, active challenge, season end, and league activity.
 - Phase 4: shared API schemas/docs, provider resilience/cache controls, frontend/Playwright accessibility coverage, and a documentation truth pass.
-- Later: CSV/Letterboxd import, curated editorial achievements, advanced statistics, custom lists, and profile themes.
+- Later: curated editorial achievements, advanced statistics, custom lists, and profile themes.
 
 ## Attribution
 

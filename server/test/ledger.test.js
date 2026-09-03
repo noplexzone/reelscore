@@ -80,6 +80,21 @@ test("ledger boundaries reject invalid identifiers, strings, timestamps, and rev
   assert.throws(() => reverseScoreEvents({ userId, eventIds: [], reason: "bad", reversedAt: "tomorrow" }), /timestamp|UTC instant/i);
 });
 
+test("repository and direct SQL reject root score events for unverified imports", () => {
+  const userId = makeUser("unverified_ledger");
+  const watchId = Number(db.prepare(`INSERT INTO watches
+    (user_id,tmdb_id,title,points,source,watched_at,watched_at_utc,watched_day_local,timezone_used,
+     competition_eligibility,source_recorded_date,source_date_kind,import_source,import_event_key)
+    VALUES (?,4242,'Imported',0,'letterboxd','2020-01-01 12:00:00','2020-01-01T12:00:00.000Z','2020-01-01','UTC',
+      'unverified_import','2020-01-01','watched_day','letterboxd','diary:https://letterboxd.com/film/imported/:2020-01-01:1')`)
+    .run(userId).lastInsertRowid);
+  assert.throws(() => awardScoreEvent({ eventKey: `test/unverified/${userId}`, userId, watchId,
+    category: "watch_first", points: 0, ruleVersion: "test-v1", metadata: {} }), /unverified import/i);
+  assert.throws(() => db.prepare(`INSERT INTO score_events
+    (event_key,user_id,watch_id,category,points,rule_version) VALUES (?,?,?,?,?,?)`)
+    .run(`test/unverified/raw/${userId}`, userId, watchId, "watch_first", 0, "test-v1"), /unverified import/i);
+});
+
 test("reverseScoreEvents is atomic and idempotent while lifetime totals include compensation rows", () => {
   const userId = makeUser("reverse");
   const award = awardScoreEvent({ eventKey: `test/reverse/${userId}`, userId, category: "test_bonus", points: 40, ruleVersion: "test-v1", metadata: { reason: "test reversal" } });

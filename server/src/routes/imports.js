@@ -1,0 +1,12 @@
+import { Router } from "express";
+import Busboy from "busboy";
+import { previewLetterboxdImport,getLetterboxdImport,commitLetterboxdImport } from "../services/letterboxd-import-service.js";
+
+export const imports=Router();
+function uploadError(message,status=400){const e=new Error(message);e.status=status;return e;}
+function readMultipart(req){return new Promise((resolve,reject)=>{if(!String(req.headers["content-type"]||"").toLowerCase().startsWith("multipart/form-data;"))return reject(uploadError("Expected multipart/form-data."));let parser;try{parser=Busboy({headers:req.headers,limits:{files:2,fileSize:2*1024*1024,fields:0,parts:2}});}catch{return reject(uploadError("Malformed multipart upload."));}const files=[],seen=new Set();let failure=null;
+ parser.on("file",(field,stream,info)=>{const expected=field==="diary"?"diary.csv":field==="watched"?"watched.csv":null;if(!expected||info.filename!==expected||info.mimeType!=="text/csv"||seen.has(field)){failure ||= uploadError("Use unique diary and watched fields with exact CSV filenames and text/csv type.");stream.resume();return;}seen.add(field);const chunks=[];stream.on("data",chunk=>chunks.push(chunk));stream.on("limit",()=>{failure ||= uploadError("Each CSV file must be at most 2 MiB.",413);});stream.on("end",()=>{if(!failure)files.push({name:info.filename,type:info.mimeType,buffer:Buffer.concat(chunks)});});});
+ parser.on("field",()=>{failure ||= uploadError("Multipart text fields are not allowed.");});parser.on("filesLimit",()=>{failure ||= uploadError("At most two CSV files may be uploaded.");});parser.on("partsLimit",()=>{failure ||= uploadError("At most two CSV files may be uploaded.");});parser.on("error",()=>reject(uploadError("Malformed multipart upload.")));parser.on("close",()=>failure?reject(failure):files.length?resolve(files):reject(uploadError("Upload diary.csv and/or watched.csv.")));req.pipe(parser);});}
+imports.post("/letterboxd/preview",async(req,res,next)=>{try{const result=await previewLetterboxdImport(req.user.id,await readMultipart(req));res.json(result);}catch(e){if(e.rowErrors)return res.status(e.status||400).json({error:e.message,row_errors:e.rowErrors});next(e);}});
+imports.get("/letterboxd/:jobId",(req,res,next)=>{try{res.json(getLetterboxdImport(req.user.id,req.params.jobId));}catch(e){next(e);}});
+imports.post("/letterboxd/:jobId/commit",async(req,res,next)=>{try{res.json(await commitLetterboxdImport(req.user.id,req.params.jobId,req.body));}catch(e){next(e);}});

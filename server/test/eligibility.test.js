@@ -48,6 +48,26 @@ test("canonical identity is scoped by user and movie with deterministic ties", (
   assert.equal(byId.get(4).eligibility_reason, "canonical_first_watch");
 });
 
+test("unverified imports never become canonical or advance eligible chronology", () => {
+  const result = evaluateWatchEligibility([
+    event(1, "2020-01-01", { competition_eligibility: "unverified_import" }),
+    event(2, "2026-01-01", { competition_eligibility: "eligible" }),
+  ]);
+  assert.deepEqual(result[0], {
+    id: 1,
+    logical_canonical_watch_id: null,
+    qualifies_for_volume: 0,
+    qualifies_for_achievement: 0,
+    qualifies_for_streak: 0,
+    qualifies_for_season: 0,
+    eligibility_rule_version: "competitive-v1",
+    eligibility_reason: "unverified_import",
+  });
+  assert.equal(result[1].logical_canonical_watch_id, 2);
+  assert.equal(result[1].eligibility_reason, "canonical_first_watch");
+  assert.equal(result[1].qualifies_for_volume, 1);
+});
+
 test("eligibility rejects ambiguous host-local timestamps", () => {
   assert.throws(() => evaluateWatchEligibility([{ id: 1, tmdb_id: 42, watched_at_utc: "01/10/2024 20:00:00" }]), /watched_at_utc/i);
   assert.throws(() => evaluateWatchEligibility([{ id: 1, tmdb_id: 42, watched_at_utc: "2024-01-10T20:00:00" }]), /watched_at_utc/i);

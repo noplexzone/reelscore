@@ -4,6 +4,7 @@ import { api, posterUrl } from "../api.js";
 import { useToast } from "../App.jsx";
 import QuickLog from "../components/QuickLog.jsx";
 import { canonicalUtcInstant } from "../utils/utc.js";
+import { watchHistoryLabel } from "../utils/letterboxdImport.js";
 
 
 function DiaryEditor({ watch, onSaved }) {
@@ -145,11 +146,12 @@ export default function Movie() {
                 <div key={w.id} className="diary-watch-row">
                   <div className="diary-watch-summary">
                     <span className="muted">
-                      {new Date(w.watched_at + "Z").toLocaleDateString()} · +{w.points} pts
+                      {watchHistoryLabel(w)} · {w.source === "letterboxd" ? "No competitive points" : `+${w.points} pts`}
                     </span>
-                    {w.source && w.source !== "manual" && (
+                    {["plex", "trakt"].includes(w.source) && (
                       <span className={`verified ${w.source}`}>✓ {w.source}</span>
                     )}
+                    {w.source === "letterboxd" && <span className="imported-label">Letterboxd import</span>}
                     <button
                       className="btn ghost small"
                       onClick={() => deleteWatch(w.id)}

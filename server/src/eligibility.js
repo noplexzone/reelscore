@@ -38,6 +38,9 @@ export function evaluateWatchEligibility(events, { cooldownDays = REWATCH_COOLDO
     const canonicalId = prior?.canonicalId ?? event.logical_canonical_watch_id ?? event.id;
     const none = { volume: false, achievement: false, streak: false, season: false };
 
+    if (event.competition_eligibility === "unverified_import") {
+      return result(event, prior?.canonicalId ?? null, none, "unverified_import");
+    }
     if (event.deleted_at != null) return result(event, canonicalId, none, "deleted");
     if (event.duplicate_status === "pending") return result(event, canonicalId, none, "duplicate_pending");
     if (event.duplicate_status === "excluded") return result(event, canonicalId, none, "duplicate_keep_separate");
