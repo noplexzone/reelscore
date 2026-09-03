@@ -1696,8 +1696,7 @@ function migration15() {
       source_row_number INTEGER NOT NULL CHECK(typeof(source_row_number)='integer' AND source_row_number BETWEEN 2 AND 10001),
       file_kind TEXT NOT NULL CHECK(file_kind IN ('diary','watched')),
       row_snapshot_json TEXT NOT NULL CHECK(json_valid(row_snapshot_json) AND json_type(row_snapshot_json)='object' AND length(row_snapshot_json)<=20000),
-      source_recorded_date TEXT NOT NULL CHECK(length(source_recorded_date)=10 AND
-        source_recorded_date GLOB '????-??-??' AND date(source_recorded_date,'+0 days')=source_recorded_date),
+      source_recorded_date TEXT,
       source_date_kind TEXT NOT NULL CHECK(source_date_kind IN ('watched_day','marked_watched_day')),
       import_event_key TEXT NOT NULL CHECK(length(trim(import_event_key)) BETWEEN 1 AND 1000),
       resolution_state TEXT NOT NULL DEFAULT 'unresolved' CHECK(resolution_state IN
@@ -1708,7 +1707,10 @@ function migration15() {
       error TEXT CHECK(error IS NULL OR length(error)<=1000),
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       UNIQUE(job_id,file_kind,source_row_number),
-      UNIQUE(job_id,import_event_key)
+      UNIQUE(job_id,import_event_key),
+      CHECK((resolution_state='invalid' AND source_recorded_date IS NULL) OR
+        (resolution_state<>'invalid' AND source_recorded_date IS NOT NULL AND length(source_recorded_date)=10 AND
+         source_recorded_date GLOB '????-??-??' AND date(source_recorded_date,'+0 days')=source_recorded_date))
     );
     CREATE INDEX IF NOT EXISTS idx_letterboxd_import_rows_job_state
       ON letterboxd_import_rows(job_id,resolution_state,id);

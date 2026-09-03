@@ -37,8 +37,9 @@ async function tmdb(pathname, params = {}) {
   return data;
 }
 
-export const searchMovies = (q, page = 1) =>
-  tmdb("/search/movie", { query: q, page, include_adult: "false" });
+export const searchMovies = (q, page = 1, { primaryReleaseYear } = {}) =>
+  tmdb("/search/movie", { query: q, page, include_adult: "false",
+    ...(primaryReleaseYear == null ? {} : { primary_release_year: primaryReleaseYear }) });
 
 // Credits are appended so notable-people and filmography trophies can be
 // evaluated without a second fetch (one cache entry per movie either way).

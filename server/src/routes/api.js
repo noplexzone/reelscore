@@ -19,6 +19,7 @@ import { updateUserSettings } from "../services/user-settings-service.js";
 import { getDiaryEntry, updateDiaryEntry } from "../services/diary-service.js";
 import { duplicates } from "./duplicates.js";
 import { leagues } from "./leagues.js";
+import { imports } from "./imports.js";
 
 export const api = Router();
 
@@ -33,6 +34,7 @@ api.use((req, res, next) => {
 api.use("/connections", connections);
 api.use("/duplicates", duplicates);
 api.use("/leagues", leagues);
+api.use("/imports", imports);
 
 function userSummary(u, { includeTimezone = false } = {}) {
   const summary = {
