@@ -87,10 +87,15 @@ function staticRules(facts, existingKeys) {
     deserved: facts.streak >= tier.n,
     metadata: { rule: "streak", threshold: tier.n, maximum_qualifying_local_day_run: facts.streak },
   });
-  for (const list of CURATED_LISTS) {
+  rules.push(...curatedListRules(facts));
+  return rules;
+}
+
+function curatedListRules(facts) {
+  return CURATED_LISTS.map((list) => {
     const requiredIds = list.films.map((film) => film.tmdb_id);
     const qualifyingIds = requiredIds.filter((id) => facts.watchedIds.has(id));
-    rules.push({
+    return {
       key: list.award.key,
       name: list.award.name,
       description: list.award.description,
@@ -103,9 +108,8 @@ function staticRules(facts, existingKeys) {
         required_tmdb_ids: requiredIds,
         qualifying_required_ids: qualifyingIds,
       },
-    });
-  }
-  return rules;
+    };
+  });
 }
 
 function genreRule(genre, count, tier) {
@@ -289,6 +293,21 @@ export function applyPreparedAchievementReconciliation(userId, prepared) {
 export async function reconcileAchievements(userId, options = {}) {
   const prepared = await prepareAchievementReconciliation(userId, options);
   return applyPreparedAchievementReconciliation(userId, prepared);
+}
+
+export function reconcileCuratedListAchievementsForAllUsers() {
+  return db.transaction(() => {
+    const now = new Date().toISOString();
+    const activated = [];
+    for (const { id } of db.prepare("SELECT id FROM users ORDER BY id").all()) {
+      const facts = qualifyingFacts(id);
+      for (const rule of curatedListRules(facts)) {
+        const result = applyRule(id, rule, now);
+        if (result) activated.push({ user_id: id, ...result });
+      }
+    }
+    return activated;
+  }).immediate();
 }
 
 export async function deleteWatchAndReconcileAchievements(userId, watchId) {

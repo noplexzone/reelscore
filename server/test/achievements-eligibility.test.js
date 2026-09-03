@@ -148,6 +148,23 @@ test("Starter Canon awards only at 25 distinct eligible films and reconciles rev
   assert.equal(totalScore(userId), scoreAtCompletion);
 });
 
+test("app startup backfills pre-existing Starter Canon completions exactly once", async () => {
+  const userId = makeUser("starter_canon_backfill");
+  for (const [index, tmdbId] of STARTER_CANON_IDS.entries()) {
+    watch(userId, { tmdbId, day: `2025-12-${String(index + 1).padStart(2, "0")}` });
+  }
+  assert.equal(achievement(userId, "curated-list:starter-canon:v1"), undefined);
+
+  const { createApp } = await import("../src/index.js");
+  createApp();
+  createApp();
+
+  const earned = achievement(userId, "curated-list:starter-canon:v1");
+  assert.equal(earned.points, 875);
+  assert.equal(awards(userId, earned.key).length, 1);
+  assert.equal(totalScore(userId), 875);
+});
+
 test("volume, genre, and decade progress count only qualifying, non-deleted watches", async () => {
   const userId = makeUser("qualified_progress");
   for (let i = 1; i <= 9; i++) watch(userId, { tmdbId: 100 + i, day: `2026-01-${String(i).padStart(2, "0")}` });
