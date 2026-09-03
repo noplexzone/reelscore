@@ -82,6 +82,7 @@ test("Starter Canon catalog is exact, DTO-safe, and deeply immutable", () => {
   assert.equal(list.name, "ReelScore Starter Canon");
   assert.deepEqual(list.films.map((film) => film.tmdb_id), STARTER_CANON_IDS);
   assert.deepEqual(list.films.map((film) => film.order), Array.from({ length: 25 }, (_, index) => index + 1));
+  assert.ok(list.films.every((film) => /^\/[A-Za-z0-9]+\.jpg$/.test(film.poster_path)));
   assert.deepEqual(list.award, { key: "curated-list:starter-canon:v1", points: 875,
     name: "ReelScore Starter Canon", description: "Watch all 25 films in the ReelScore Starter Canon" });
   assert.equal(curatedList("missing"), null);
