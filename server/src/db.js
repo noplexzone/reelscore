@@ -20,7 +20,7 @@ function openDatabase() {
   return rawDb;
 }
 
-export function initializeDatabase({ targetVersion = 14 } = {}) {
+export function initializeDatabase({ targetVersion = 15 } = {}) {
   const instance = openDatabase();
   if (!initialized && !initializing) {
     initializing = true;
@@ -1634,12 +1634,173 @@ function migration14() {
   db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (14)").run();
 }
 
+// Durable, private provenance for user-supplied Letterboxd history.
+function migration15() {
+  const columns = [
+    ["competition_eligibility", "TEXT NOT NULL DEFAULT 'eligible' CHECK(competition_eligibility IN ('eligible','unverified_import'))"],
+    ["source_recorded_date", "TEXT"],
+    ["source_date_kind", "TEXT CHECK(source_date_kind IS NULL OR source_date_kind IN ('watched_day','marked_watched_day'))"],
+    ["import_source", "TEXT"],
+    ["import_event_key", "TEXT"],
+  ];
+  for (const [name, definition] of columns) {
+    if (!columnExists("watches", name)) db.exec(`ALTER TABLE watches ADD COLUMN ${name} ${definition}`);
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_watches_import_identity
+      ON watches(user_id,import_source,import_event_key)
+      WHERE import_source IS NOT NULL AND import_event_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS letterboxd_import_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      public_job_id TEXT NOT NULL CHECK(length(trim(public_job_id)) BETWEEN 16 AND 128),
+      file_digest TEXT NOT NULL CHECK(length(file_digest)=64 AND file_digest NOT GLOB '*[^0-9a-f]*'),
+      diary_file_sha256 TEXT CHECK(diary_file_sha256 IS NULL OR
+        (length(diary_file_sha256)=64 AND diary_file_sha256 NOT GLOB '*[^0-9a-f]*')),
+      watched_file_sha256 TEXT CHECK(watched_file_sha256 IS NULL OR
+        (length(watched_file_sha256)=64 AND watched_file_sha256 NOT GLOB '*[^0-9a-f]*')),
+      commit_token_hash TEXT NOT NULL CHECK(length(commit_token_hash)=64 AND commit_token_hash NOT GLOB '*[^0-9a-f]*'),
+      state TEXT NOT NULL DEFAULT 'preview' CHECK(state IN ('preview','committing','completed','failed')),
+      decision_hash TEXT CHECK(decision_hash IS NULL OR
+        (length(decision_hash)=64 AND decision_hash NOT GLOB '*[^0-9a-f]*')),
+      row_count INTEGER NOT NULL CHECK(typeof(row_count)='integer' AND row_count BETWEEN 1 AND 10000),
+      resolved_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(resolved_count)='integer' AND resolved_count BETWEEN 0 AND row_count),
+      error_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(error_count)='integer' AND error_count BETWEEN 0 AND row_count),
+      result_json TEXT CHECK(result_json IS NULL OR (json_valid(result_json) AND json_type(result_json)='object')),
+      expires_at TEXT NOT NULL CHECK(expires_at GLOB '????-??-??T??:??:??.???Z' AND julianday(expires_at) IS NOT NULL),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(created_at GLOB '????-??-??T??:??:??.???Z' AND julianday(created_at) IS NOT NULL),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        CHECK(updated_at GLOB '????-??-??T??:??:??.???Z' AND julianday(updated_at) IS NOT NULL),
+      commit_token_consumed_at TEXT CHECK(commit_token_consumed_at IS NULL OR
+        (commit_token_consumed_at GLOB '????-??-??T??:??:??.???Z' AND julianday(commit_token_consumed_at) IS NOT NULL)),
+      completed_at TEXT CHECK(completed_at IS NULL OR
+        (completed_at GLOB '????-??-??T??:??:??.???Z' AND julianday(completed_at) IS NOT NULL)),
+      error TEXT CHECK(error IS NULL OR length(error)<=1000),
+      UNIQUE(user_id,public_job_id),
+      UNIQUE(user_id,file_digest),
+      UNIQUE(user_id,commit_token_hash),
+      CHECK(diary_file_sha256 IS NOT NULL OR watched_file_sha256 IS NOT NULL),
+      CHECK(error_count<=row_count-resolved_count OR state IN ('completed','failed'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_letterboxd_import_jobs_owner_state
+      ON letterboxd_import_jobs(user_id,state,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_letterboxd_import_jobs_expiry
+      ON letterboxd_import_jobs(expires_at) WHERE state='preview';
+
+    CREATE TABLE IF NOT EXISTS letterboxd_import_rows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL REFERENCES letterboxd_import_jobs(id) ON DELETE CASCADE,
+      source_row_number INTEGER NOT NULL CHECK(typeof(source_row_number)='integer' AND source_row_number BETWEEN 2 AND 10001),
+      file_kind TEXT NOT NULL CHECK(file_kind IN ('diary','watched')),
+      row_snapshot_json TEXT NOT NULL CHECK(json_valid(row_snapshot_json) AND json_type(row_snapshot_json)='object' AND length(row_snapshot_json)<=20000),
+      source_recorded_date TEXT NOT NULL CHECK(length(source_recorded_date)=10 AND
+        source_recorded_date GLOB '????-??-??' AND date(source_recorded_date,'+0 days')=source_recorded_date),
+      source_date_kind TEXT NOT NULL CHECK(source_date_kind IN ('watched_day','marked_watched_day')),
+      import_event_key TEXT NOT NULL CHECK(length(trim(import_event_key)) BETWEEN 1 AND 1000),
+      resolution_state TEXT NOT NULL DEFAULT 'unresolved' CHECK(resolution_state IN
+        ('unresolved','auto_selected','choice_required','selected','skipped','invalid','imported','already_imported','error')),
+      candidate_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(candidate_json) AND json_type(candidate_json)='array' AND length(candidate_json)<=50000),
+      selected_tmdb_id INTEGER CHECK(selected_tmdb_id IS NULL OR (typeof(selected_tmdb_id)='integer' AND selected_tmdb_id>0)),
+      watch_id INTEGER REFERENCES watches(id) ON DELETE RESTRICT,
+      error TEXT CHECK(error IS NULL OR length(error)<=1000),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      UNIQUE(job_id,file_kind,source_row_number),
+      UNIQUE(job_id,import_event_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_letterboxd_import_rows_job_state
+      ON letterboxd_import_rows(job_id,resolution_state,id);
+
+    CREATE TRIGGER IF NOT EXISTS trg_letterboxd_import_rows_watch_insert
+    BEFORE INSERT ON letterboxd_import_rows
+    WHEN NEW.watch_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM letterboxd_import_jobs job JOIN watches watch ON watch.id=NEW.watch_id
+      WHERE job.id=NEW.job_id AND job.user_id=watch.user_id AND NEW.selected_tmdb_id=watch.tmdb_id
+    )
+    BEGIN SELECT RAISE(ABORT,'import row owner or movie mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_letterboxd_import_rows_watch_update
+    BEFORE UPDATE OF job_id,selected_tmdb_id,watch_id ON letterboxd_import_rows
+    WHEN NEW.watch_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM letterboxd_import_jobs job JOIN watches watch ON watch.id=NEW.watch_id
+      WHERE job.id=NEW.job_id AND job.user_id=watch.user_id AND NEW.selected_tmdb_id=watch.tmdb_id
+    )
+    BEGIN SELECT RAISE(ABORT,'import row owner or movie mismatch'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_unverified_import_insert
+    BEFORE INSERT ON watches
+    WHEN (NEW.source='letterboxd' AND NEW.competition_eligibility<>'unverified_import')
+      OR (NEW.competition_eligibility='unverified_import' AND (
+        NEW.source<>'letterboxd' OR NEW.points<>0 OR NEW.qualifies_for_volume<>0 OR NEW.qualifies_for_achievement<>0
+        OR NEW.qualifies_for_streak<>0 OR NEW.qualifies_for_season<>0 OR NEW.visibility<>'private'
+        OR NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL
+        OR NEW.import_source IS NULL OR NEW.import_source<>trim(NEW.import_source) OR NEW.import_source<>'letterboxd'
+        OR NEW.import_event_key IS NULL OR length(trim(NEW.import_event_key)) NOT BETWEEN 1 AND 1000
+        OR NEW.source_recorded_date IS NULL OR length(NEW.source_recorded_date)<>10
+        OR NEW.source_recorded_date NOT GLOB '????-??-??'
+        OR date(NEW.source_recorded_date,'+0 days') IS NOT NEW.source_recorded_date
+        OR NEW.source_date_kind IS NULL OR NEW.source_date_kind NOT IN ('watched_day','marked_watched_day')
+      )) OR (NEW.competition_eligibility<>'unverified_import' AND (
+        NEW.import_source IS NOT NULL OR NEW.import_event_key IS NOT NULL
+        OR NEW.source_recorded_date IS NOT NULL OR NEW.source_date_kind IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'unverified import integrity violation'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_watches_unverified_import_update
+    BEFORE UPDATE ON watches
+    WHEN NEW.competition_eligibility IS NOT OLD.competition_eligibility
+      OR (OLD.competition_eligibility='unverified_import' AND (
+        NEW.user_id IS NOT OLD.user_id OR NEW.source IS NOT OLD.source
+        OR NEW.source_recorded_date IS NOT OLD.source_recorded_date
+        OR NEW.source_date_kind IS NOT OLD.source_date_kind
+        OR NEW.import_source IS NOT OLD.import_source OR NEW.import_event_key IS NOT OLD.import_event_key
+      ))
+      OR (NEW.source='letterboxd' AND NEW.competition_eligibility<>'unverified_import')
+      OR (NEW.competition_eligibility='unverified_import' AND (
+        NEW.source<>'letterboxd' OR NEW.points<>0 OR NEW.qualifies_for_volume<>0 OR NEW.qualifies_for_achievement<>0
+        OR NEW.qualifies_for_streak<>0 OR NEW.qualifies_for_season<>0 OR NEW.visibility<>'private'
+        OR NEW.provider_service IS NOT NULL OR NEW.provider_connection_id IS NOT NULL OR NEW.provider_event_id IS NOT NULL
+        OR NEW.import_source IS NULL OR NEW.import_source<>trim(NEW.import_source) OR NEW.import_source<>'letterboxd'
+        OR NEW.import_event_key IS NULL OR length(trim(NEW.import_event_key)) NOT BETWEEN 1 AND 1000
+        OR NEW.source_recorded_date IS NULL OR length(NEW.source_recorded_date)<>10
+        OR NEW.source_recorded_date NOT GLOB '????-??-??'
+        OR date(NEW.source_recorded_date,'+0 days') IS NOT NEW.source_recorded_date
+        OR NEW.source_date_kind IS NULL OR NEW.source_date_kind NOT IN ('watched_day','marked_watched_day')
+      )) OR (NEW.competition_eligibility<>'unverified_import' AND (
+        NEW.import_source IS NOT NULL OR NEW.import_event_key IS NOT NULL
+        OR NEW.source_recorded_date IS NOT NULL OR NEW.source_date_kind IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT,'unverified import integrity violation'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_score_events_unverified_watch_insert
+    BEFORE INSERT ON score_events
+    WHEN NEW.watch_id IS NOT NULL AND NEW.reverses_event_id IS NULL
+      AND EXISTS (SELECT 1 FROM watches w WHERE w.id=NEW.watch_id AND w.competition_eligibility='unverified_import')
+    BEGIN SELECT RAISE(ABORT,'unverified import cannot have a root score event'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_letterboxd_import_jobs_identity_update
+    BEFORE UPDATE OF user_id,public_job_id,file_digest,diary_file_sha256,watched_file_sha256,commit_token_hash,row_count
+    ON letterboxd_import_jobs
+    WHEN NEW.user_id IS NOT OLD.user_id OR NEW.public_job_id IS NOT OLD.public_job_id
+      OR NEW.file_digest IS NOT OLD.file_digest OR NEW.diary_file_sha256 IS NOT OLD.diary_file_sha256
+      OR NEW.watched_file_sha256 IS NOT OLD.watched_file_sha256
+      OR NEW.commit_token_hash IS NOT OLD.commit_token_hash OR NEW.row_count IS NOT OLD.row_count
+    BEGIN SELECT RAISE(ABORT,'import job identity is immutable'); END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_letterboxd_import_jobs_token_reuse
+    BEFORE UPDATE OF commit_token_consumed_at ON letterboxd_import_jobs
+    WHEN OLD.commit_token_consumed_at IS NOT NULL AND NEW.commit_token_consumed_at IS NOT OLD.commit_token_consumed_at
+    BEGIN SELECT RAISE(ABORT,'Letterboxd import commit token is one-use'); END;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_versions (version) VALUES (15)").run();
+}
+
 // ---------------------------------------------------------------------------
 // Public: run all pending migrations
 // ---------------------------------------------------------------------------
 
-export function runMigrations({ skipBackup = false, targetVersion = 14 } = {}) {
-  const latestVersion = 14;
+export function runMigrations({ skipBackup = false, targetVersion = 15 } = {}) {
+  const latestVersion = 15;
   if (!Number.isInteger(targetVersion) || targetVersion < 0 || targetVersion > latestVersion) {
     throw new RangeError(`Invalid migration target version: ${targetVersion}`);
   }
@@ -1723,6 +1884,9 @@ export function runMigrations({ skipBackup = false, targetVersion = 14 } = {}) {
   }
   if (targetVersion >= 14 && !applied.has(14)) {
     db.transaction(migration14)();
+  }
+  if (targetVersion >= 15 && !applied.has(15)) {
+    db.transaction(migration15)();
   }
 
   if (process.env.APP_MODE === "hosted") {

@@ -135,7 +135,7 @@ test("schema-6 automatic snapshot restores and migrates to schema 14", () => {
   assert.equal(restored.status, 0, restored.stderr);
   snapshot = new Database(path.join(restoreDir, "reelscore.db"), { readonly: true, fileMustExist: true });
   assert.equal(snapshot.pragma("integrity_check")[0].integrity_check, "ok");
-  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 14);
+  assert.equal(snapshot.prepare("SELECT MAX(version) version FROM schema_versions").get().version, 15);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM users").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM watches").get().count, 1);
   assert.equal(snapshot.prepare("SELECT COUNT(*) count FROM achievements").get().count, 1);

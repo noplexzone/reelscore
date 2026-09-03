@@ -14,7 +14,7 @@ function chunks(values, size = SEASON_RECONCILIATION_CHUNK) {
 }
 
 function desiredAward(watch, decision) {
-  if (watch.deleted_at != null || ["duplicate_pending", "duplicate_keep_separate"].includes(decision.eligibility_reason)) return null;
+  if (watch.deleted_at != null || ["duplicate_pending", "duplicate_keep_separate", "unverified_import"].includes(decision.eligibility_reason)) return null;
   const base = basePoints({ voteAverage: watch.vote_average, runtime: watch.runtime });
   let category;
   let multiplier;

@@ -56,6 +56,12 @@ function sameImmutableEvent(row, expected) {
 
 export function awardScoreEvent(input) {
   const event = normalizedInput(input);
+  if (event.watch_id != null && event.reverses_event_id == null) {
+    const watch = db.prepare("SELECT competition_eligibility FROM watches WHERE id=?").get(event.watch_id);
+    if (watch?.competition_eligibility === "unverified_import") {
+      throw new Error("An unverified import cannot have a root score event.");
+    }
+  }
   const insertedCreatedAt = event.created_at ?? new Date().toISOString();
   const insertedEffectiveAt = event.effective_at ?? insertedCreatedAt;
   db.prepare(`INSERT INTO score_events
