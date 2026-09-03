@@ -144,6 +144,14 @@ test("CSP contains frame-ancestors none", async () => {
   assert.ok(csp.includes("frame-ancestors 'none'"), "frame-ancestors 'none' in CSP");
 });
 
+test("CSP permits only the configured Google font stylesheet and font asset origins", async () => {
+  const r = await fetch(`${srvSH.base}/api/health`);
+  const csp = r.headers.get("content-security-policy") || "";
+  assert.match(csp, /style-src [^;]*https:\/\/fonts\.googleapis\.com/);
+  assert.match(csp, /font-src [^;]*https:\/\/fonts\.gstatic\.com/);
+  assert.doesNotMatch(csp, /(?:style|font)-src [^;]*\*/);
+});
+
 test("self_hosted: no HSTS header", async () => {
   const r = await fetch(`${srvSH.base}/api/health`);
   assert.ok(!r.headers.get("strict-transport-security"), "no HSTS in self_hosted mode");

@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `TMDB_BASE_URL`/`TRAKT_BASE_URL` overrides plus local API stubs under `server/test/stub/` for developing without real keys.
 
 ### Fixed
+- Content Security Policy now permits the exact Google Fonts stylesheet and font origins already used by the bundled UI.
 - Movie detail routes now import the curated-person formatter they invoke, preventing a runtime 500 before diary editing.
 - Plex linking on Node.js 22 now honors the DNS lookup all-address callback contract instead of failing with `ERR_INVALID_IP_ADDRESS`.
 - App went blank after navigating away from the Friends or Profile ("Me") tabs: their data-loading functions were passed directly to `useEffect`, so the returned promise was treated as a cleanup function and crashed React on unmount.
