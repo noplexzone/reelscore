@@ -10,6 +10,7 @@ import { admin } from "./routes/admin.js";
 import { publicLeagueInvites } from "./routes/leagues.js";
 import { DATA_DIR, db, initializeDatabase } from "./db.js";
 import { BOOTSTRAP_ADMIN_TOKEN, IS_HOSTED } from "./config.js";
+import { reconcileCuratedListAchievementsForAllUsers } from "./services/achievement-service.js";
 import {
   configureTrustProxy,
   validateHostOrigin,
@@ -26,6 +27,7 @@ export function createApp() {
     throw new Error("[reelscore] FATAL: BOOTSTRAP_ADMIN_TOKEN is required for a fresh hosted database.");
   }
   initializeDatabase();
+  reconcileCuratedListAchievementsForAllUsers();
   if (IS_HOSTED && !BOOTSTRAP_ADMIN_TOKEN && db.prepare("SELECT COUNT(*) c FROM users").get().c === 0) {
     throw new Error("[reelscore] FATAL: BOOTSTRAP_ADMIN_TOKEN is required until the first administrator is created.");
   }

@@ -25,6 +25,17 @@ search → log → score → achievements → friends.
 | Decades | Films from 5 / 8 / 11 different decades |
 | Streaks | 3 / 7 / 30 consecutive days with a watch |
 | Filmographies | Watch a curated actor's or director's entire marquee filmography (Actors tab) → `500 + 25/film` bonus |
+| Curated lists | Complete the fixed, versioned 25-film ReelScore Starter Canon (`starter-canon:v1`) → one **875-point** trophy |
+
+## Curated lists
+
+The authenticated **Lists** area exposes the source-controlled ReelScore Starter Canon at
+`/lists/starter-canon`. Its 25-film v1 membership and display metadata are fixed; future
+editorial changes require a new list version rather than silently changing an existing
+score basis. Progress uses distinct, active watches that qualify for achievements. Private
+unverified Letterboxd imports, deleted or ineligible watches, unresolved duplicates, and
+other users’ history never count. Completing all 25 films awards one reversible,
+ledger-backed **875-point** trophy.
 
 ## Plex & Trakt sync
 

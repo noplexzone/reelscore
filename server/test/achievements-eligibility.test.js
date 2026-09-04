@@ -28,6 +28,7 @@ const { db } = await import("../src/db.js");
 const { awardScoreEvent, totalScore } = await import("../src/repositories/score-ledger.js");
 const { reconcileAchievements, achievementProgress, deleteWatchAndReconcileAchievements } = await import("../src/services/achievement-service.js");
 const { logManualWatchAndReconcile } = await import("../src/services/manual-watch-service.js");
+const { CURATED_LISTS, curatedList } = await import("../src/curated-lists.js");
 
 function makeUser(prefix) {
   return Number(db.prepare("INSERT INTO users (username,password_hash) VALUES (?, 'x')")
@@ -52,9 +53,117 @@ function watch(userId, {
   return Number(result.lastInsertRowid);
 }
 
+function importedWatch(userId, tmdbId, day) {
+  const result = db.prepare(`INSERT INTO watches
+    (user_id,tmdb_id,title,points,source,watched_at,qualifies_for_volume,
+     qualifies_for_achievement,qualifies_for_streak,qualifies_for_season,visibility,
+     competition_eligibility,source_recorded_date,source_date_kind,import_source,import_event_key)
+    VALUES (?,?,?,0,'letterboxd',?,0,0,0,0,'private','unverified_import',?,
+      'watched_day','letterboxd',?)`).run(
+    userId, tmdbId, `Imported ${tmdbId}`, `${day} 12:00:00`, day, `diary:${tmdbId}:${day}`,
+  );
+  return Number(result.lastInsertRowid);
+}
+
 const achievement = (userId, key) => db.prepare("SELECT * FROM achievements WHERE user_id=? AND key=?").get(userId, key);
 const awards = (userId, key) => db.prepare(`SELECT s.* FROM score_events s JOIN achievements a ON a.id=s.achievement_id
   WHERE a.user_id=? AND a.key=? AND s.reverses_event_id IS NULL ORDER BY s.id`).all(userId, key);
+
+const STARTER_CANON_IDS = [
+  19, 901, 630, 15, 289, 872, 346, 389, 539, 62, 238, 578, 44012,
+  11, 348, 85, 78, 925, 329, 680, 129, 120, 598, 376867, 496243,
+];
+
+test("Starter Canon catalog is exact, DTO-safe, and deeply immutable", () => {
+  const list = curatedList("starter-canon");
+  assert.equal(CURATED_LISTS.length, 1);
+  assert.equal(list.slug, "starter-canon");
+  assert.equal(list.version, "v1");
+  assert.equal(list.name, "ReelScore Starter Canon");
+  assert.deepEqual(list.films.map((film) => film.tmdb_id), STARTER_CANON_IDS);
+  assert.deepEqual(list.films.map((film) => film.order), Array.from({ length: 25 }, (_, index) => index + 1));
+  assert.ok(list.films.every((film) => /^\/[A-Za-z0-9]+\.jpg$/.test(film.poster_path)));
+  assert.deepEqual(list.award, { key: "curated-list:starter-canon:v1", points: 875,
+    name: "ReelScore Starter Canon", description: "Watch all 25 films in the ReelScore Starter Canon" });
+  assert.equal(curatedList("missing"), null);
+  assert.doesNotThrow(() => structuredClone(CURATED_LISTS));
+  assert.ok(Object.isFrozen(CURATED_LISTS));
+  assert.ok(Object.isFrozen(list));
+  assert.ok(Object.isFrozen(list.films));
+  assert.ok(list.films.every(Object.isFrozen));
+  assert.ok(Object.isFrozen(list.award));
+  assert.throws(() => { list.films[0].title = "Mutated"; }, TypeError);
+});
+
+test("Starter Canon awards only at 25 distinct eligible films and reconciles reversibly", async () => {
+  const userId = makeUser("starter_canon");
+  for (const [index, tmdbId] of STARTER_CANON_IDS.slice(0, 24).entries()) {
+    watch(userId, { tmdbId, day: `2026-01-${String(index + 1).padStart(2, "0")}` });
+  }
+  watch(userId, { tmdbId: STARTER_CANON_IDS[0], day: "2026-01-25" });
+  watch(userId, { tmdbId: STARTER_CANON_IDS[24], day: "2026-01-26", achievement: 0 });
+  watch(userId, { tmdbId: STARTER_CANON_IDS[24], day: "2026-01-27", deleted: true });
+  importedWatch(userId, STARTER_CANON_IDS[24], "2026-01-28");
+  watch(makeUser("starter_canon_other"), { tmdbId: STARTER_CANON_IDS[24], day: "2026-01-28" });
+
+  await reconcileAchievements(userId);
+  assert.equal(achievement(userId, "curated-list:starter-canon:v1"), undefined);
+  assert.deepEqual(achievementProgress(userId).curated_lists, [{
+    slug: "starter-canon", version: "v1", count: 24, total: 25, complete: false,
+  }]);
+
+  const completingWatch = watch(userId, { tmdbId: STARTER_CANON_IDS[24], day: "2026-01-29" });
+  const unlocked = await reconcileAchievements(userId);
+  await reconcileAchievements(userId);
+  assert.ok(unlocked.some((row) => row.key === "curated-list:starter-canon:v1"));
+  const earned = achievement(userId, "curated-list:starter-canon:v1");
+  assert.equal(earned.points, 875);
+  assert.equal(awards(userId, earned.key).length, 1);
+  const scoreAtCompletion = totalScore(userId);
+  const awardMetadata = JSON.parse(awards(userId, earned.key)[0].metadata_json);
+  assert.equal(awardMetadata.list_slug, "starter-canon");
+  assert.equal(awardMetadata.list_version, "v1");
+  assert.deepEqual(awardMetadata.required_tmdb_ids, STARTER_CANON_IDS);
+  assert.deepEqual(awardMetadata.qualifying_required_ids, STARTER_CANON_IDS);
+  assert.deepEqual(achievementProgress(userId).curated_lists, [{
+    slug: "starter-canon", version: "v1", count: 25, total: 25, complete: true,
+  }]);
+
+  db.prepare("UPDATE watches SET deleted_at=?,deleted_reason='user_deleted',qualifies_for_achievement=0 WHERE id=?")
+    .run("2026-02-01T00:00:00.000Z", completingWatch);
+  await reconcileAchievements(userId);
+  await reconcileAchievements(userId);
+  const revoked = achievement(userId, earned.key);
+  assert.ok(revoked.revoked_at);
+  const reversals = db.prepare("SELECT points FROM score_events WHERE reverses_event_id=?").all(earned.score_event_id);
+  assert.deepEqual(reversals, [{ points: -875 }]);
+
+  watch(userId, { tmdbId: STARTER_CANON_IDS[24], day: "2026-02-02" });
+  await reconcileAchievements(userId);
+  await reconcileAchievements(userId);
+  const reactivated = achievement(userId, earned.key);
+  assert.equal(reactivated.revoked_at, null);
+  assert.notEqual(reactivated.score_event_id, earned.score_event_id);
+  assert.equal(awards(userId, earned.key).length, 2);
+  assert.equal(totalScore(userId), scoreAtCompletion);
+});
+
+test("app startup backfills pre-existing Starter Canon completions exactly once", async () => {
+  const userId = makeUser("starter_canon_backfill");
+  for (const [index, tmdbId] of STARTER_CANON_IDS.entries()) {
+    watch(userId, { tmdbId, day: `2025-12-${String(index + 1).padStart(2, "0")}` });
+  }
+  assert.equal(achievement(userId, "curated-list:starter-canon:v1"), undefined);
+
+  const { createApp } = await import("../src/index.js");
+  createApp();
+  createApp();
+
+  const earned = achievement(userId, "curated-list:starter-canon:v1");
+  assert.equal(earned.points, 875);
+  assert.equal(awards(userId, earned.key).length, 1);
+  assert.equal(totalScore(userId), 875);
+});
 
 test("volume, genre, and decade progress count only qualifying, non-deleted watches", async () => {
   const userId = makeUser("qualified_progress");

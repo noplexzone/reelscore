@@ -17,6 +17,7 @@ import { logManualWatchAndReconcile } from "../services/manual-watch-service.js"
 import { currentStreak } from "../services/streak-service.js";
 import { updateUserSettings } from "../services/user-settings-service.js";
 import { getDiaryEntry, updateDiaryEntry } from "../services/diary-service.js";
+import { curatedListDetail, curatedListSummaries } from "../services/curated-list-service.js";
 import { duplicates } from "./duplicates.js";
 import { leagues } from "./leagues.js";
 import { imports } from "./imports.js";
@@ -150,6 +151,17 @@ api.get("/home", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+// ---- Curated lists ------------------------------------------------------
+api.get("/curated-lists", (req, res) => {
+  res.json({ lists: curatedListSummaries(req.user.id) });
+});
+
+api.get("/curated-lists/:slug", (req, res) => {
+  const list = curatedListDetail(req.user.id, req.params.slug);
+  if (!list) return res.status(404).json({ error: "Curated list not found." });
+  res.json(list);
 });
 
 // ---- Movies -------------------------------------------------------------

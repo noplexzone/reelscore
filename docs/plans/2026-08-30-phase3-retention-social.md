@@ -16,6 +16,12 @@
 - Commit remains disabled until every ambiguous row has a decision. Completed jobs restore an idempotent result after reload without persisting or rendering the one-use commit token.
 - Imported history is private and competitively excluded. Watched-only rows use honest **Marked watched** labels because the source date records when Letterboxd was marked, not an attested watch instant.
 
+## Slice 1c — Versioned curated-list achievements (completed)
+
+- Adds the fixed, source-controlled 25-film `starter-canon:v1` rule with one 875-point completion trophy and append-only ledger reconciliation.
+- Progress and awards use distinct active `qualifies_for_achievement=1` owner watches only; private Letterboxd imports, deleted/ineligible rows, unresolved duplicates, and cross-user history remain excluded.
+- Authenticated `/lists` and `/lists/starter-canon` views provide poster-first desktop/mobile progress without runtime TMDB dependencies.
+
 ## Slice 2 — Social lifecycle
 
 1. Migrate friend rows to explicit outgoing/incoming/accepted/blocked lifecycle with append-only actor audit and unique unordered pair identity.

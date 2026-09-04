@@ -6,6 +6,7 @@ import { softDeleteWatch } from "../repositories/watch-repository.js";
 import { reconcileMovieEligibility } from "./scoring-service.js";
 import { reconcilePendingDuplicatesAfterWatchDeletion } from "./duplicate-state-service.js";
 import { VOLUME_TIERS, GENRE_TIERS, DECADE_TIERS, STREAK_TIERS } from "../achievements.js";
+import { CURATED_LISTS } from "../curated-lists.js";
 
 export const ACHIEVEMENT_RULE_VERSION = "competitive-achievement-v1";
 const QUALIFYING = "qualifies_for_achievement=1 AND deleted_at IS NULL";
@@ -86,7 +87,29 @@ function staticRules(facts, existingKeys) {
     deserved: facts.streak >= tier.n,
     metadata: { rule: "streak", threshold: tier.n, maximum_qualifying_local_day_run: facts.streak },
   });
+  rules.push(...curatedListRules(facts));
   return rules;
+}
+
+function curatedListRules(facts) {
+  return CURATED_LISTS.map((list) => {
+    const requiredIds = list.films.map((film) => film.tmdb_id);
+    const qualifyingIds = requiredIds.filter((id) => facts.watchedIds.has(id));
+    return {
+      key: list.award.key,
+      name: list.award.name,
+      description: list.award.description,
+      points: list.award.points,
+      deserved: qualifyingIds.length === requiredIds.length,
+      metadata: {
+        rule: "curated_list",
+        list_slug: list.slug,
+        list_version: list.version,
+        required_tmdb_ids: requiredIds,
+        qualifying_required_ids: qualifyingIds,
+      },
+    };
+  });
 }
 
 function genreRule(genre, count, tier) {
@@ -272,6 +295,21 @@ export async function reconcileAchievements(userId, options = {}) {
   return applyPreparedAchievementReconciliation(userId, prepared);
 }
 
+export function reconcileCuratedListAchievementsForAllUsers() {
+  return db.transaction(() => {
+    const now = new Date().toISOString();
+    const activated = [];
+    for (const { id } of db.prepare("SELECT id FROM users ORDER BY id").all()) {
+      const facts = qualifyingFacts(id);
+      for (const rule of curatedListRules(facts)) {
+        const result = applyRule(id, rule, now);
+        if (result) activated.push({ user_id: id, ...result });
+      }
+    }
+    return activated;
+  }).immediate();
+}
+
 export async function deleteWatchAndReconcileAchievements(userId, watchId) {
   const uid = positiveId(userId, "userId");
   const wid = positiveId(watchId, "watchId");
@@ -294,5 +332,9 @@ export async function deleteWatchAndReconcileAchievements(userId, watchId) {
 
 export function achievementProgress(userId) {
   const facts = qualifyingFacts(positiveId(userId, "userId"));
-  return { volume: facts.count, streak: facts.streak, decades: facts.decades };
+  const curatedLists = CURATED_LISTS.map((list) => {
+    const count = list.films.reduce((total, film) => total + Number(facts.watchedIds.has(film.tmdb_id)), 0);
+    return { slug: list.slug, version: list.version, count, total: list.films.length, complete: count === list.films.length };
+  });
+  return { volume: facts.count, streak: facts.streak, decades: facts.decades, curated_lists: curatedLists };
 }

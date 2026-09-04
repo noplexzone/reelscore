@@ -12,6 +12,8 @@ import Home from "./pages/Home.jsx";
 import Search from "./pages/Search.jsx";
 import Movie from "./pages/Movie.jsx";
 import Achievements from "./pages/Achievements.jsx";
+import CuratedLists from "./pages/CuratedLists.jsx";
+import CuratedList from "./pages/CuratedList.jsx";
 import Friends from "./pages/Friends.jsx";
 import Leagues from "./pages/Leagues.jsx";
 import Profile from "./pages/Profile.jsx";
@@ -46,7 +48,7 @@ function Nav() {
   return <nav className="nav">
     <ActiveLink to="/" exact className="brand">REEL<em>SCORE</em></ActiveLink>
     <div className="nav-links">
-      <ActiveLink to="/" exact>Home</ActiveLink><ActiveLink to="/search">Search</ActiveLink><ActiveLink to="/actors">Actors</ActiveLink><ActiveLink to="/achievements">Trophies</ActiveLink><ActiveLink to="/duplicates">Review</ActiveLink><ActiveLink to="/friends">Friends</ActiveLink><ActiveLink to="/leagues">Leagues</ActiveLink>
+      <ActiveLink to="/" exact>Home</ActiveLink><ActiveLink to="/search">Search</ActiveLink><ActiveLink to="/actors">Actors</ActiveLink><ActiveLink to="/lists">Lists</ActiveLink><ActiveLink to="/achievements">Trophies</ActiveLink><ActiveLink to="/duplicates">Review</ActiveLink><ActiveLink to="/friends">Friends</ActiveLink><ActiveLink to="/leagues">Leagues</ActiveLink>
       {u && <ActiveLink to={`/u/${u.username}`}>Me</ActiveLink>}
       {u && <ActiveLink to="/settings">Settings</ActiveLink>}
       {u && !u.email_verified && <ActiveLink to="/claim-email">Verify email</ActiveLink>}
@@ -85,6 +87,8 @@ export default function App() {
     <Route path="/actors"><Protected><Actors /></Protected></Route>
     <Route path="/person/:id"><Protected><Person /></Protected></Route>
     <Route path="/achievements"><Protected><Achievements /></Protected></Route>
+    <Route path="/lists/:slug"><Protected><CuratedList /></Protected></Route>
+    <Route path="/lists"><Protected><CuratedLists /></Protected></Route>
     <Route path="/friends"><Protected><Friends /></Protected></Route>
     <Route path="/leagues/:id"><Protected><Leagues /></Protected></Route>
     <Route path="/leagues"><Protected><Leagues /></Protected></Route>
